@@ -209,31 +209,18 @@ void formatDateTimeLine(char* out, size_t out_len) {
 
   const time_t utc_now = time(nullptr);
   if (utc_now < kMinimumValidEpoch) {
-    snprintf(out, out_len, "--:-- -- ---");
+    snprintf(out, out_len, "---- -- --:--");
     return;
   }
 
   const time_t local_now = utc_now + s_utc_offset_seconds;
   tm local = {};
   gmtime_r(&local_now, &local);
-  constexpr const char* kMonths[] = {"JAN", "FEB", "MAR", "APR",
-                                     "MAY", "JUN", "JUL", "AUG",
-                                     "SEP", "OCT", "NOV", "DEC"};
-  const char* month =
-      local.tm_mon >= 0 && local.tm_mon < 12 ? kMonths[local.tm_mon] : "---";
-
-  if (settings::use24HourClock()) {
-    snprintf(out, out_len, "%02d:%02d %02d %s", local.tm_hour, local.tm_min,
-             local.tm_mday, month);
-    return;
-  }
-
-  int hour = local.tm_hour % 12;
-  if (hour == 0) {
-    hour = 12;
-  }
-  snprintf(out, out_len, "%d:%02d%c %02d %s", hour, local.tm_min,
-           local.tm_hour >= 12 ? 'P' : 'A', local.tm_mday, month);
+  const int year = local.tm_year + 1900;
+  const int month = local.tm_mon + 1;
+  const int day = local.tm_mday;
+  snprintf(out, out_len, "%04d-%02d-%02d %02d:%02d", year, month, day,
+           local.tm_hour, local.tm_min);
 }
 
 }  // namespace services::weather
