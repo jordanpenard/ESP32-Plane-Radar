@@ -1,5 +1,6 @@
 #include "services/weather_time.h"
 
+#include <Arduino.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 
@@ -17,6 +18,7 @@ namespace services::weather {
 namespace {
 
 constexpr time_t kMinimumValidEpoch = 1609459200;  // 2021-01-01 UTC
+constexpr uint32_t kMinHeapForSslBytes = 52000;
 
 bool s_started = false;
 bool s_valid = false;
@@ -46,6 +48,21 @@ void pollNetwork() {
   if (s_poll_fn != nullptr) {
     s_poll_fn();
   }
+}
+
+bool prepareSecureClient(WiFiClientSecure* client, const char* tag) {
+  if (client == nullptr) {
+    return false;
+  }
+  const uint32_t free_heap = ESP.getFreeHeap();
+  if (free_heap < kMinHeapForSslBytes) {
+    setLastError("low heap");
+    Serial.printf("%s: skip TLS, low heap=%lu\n", tag,
+                  static_cast<unsigned long>(free_heap));
+    return false;
+  }
+  client->setInsecure();
+  return true;
 }
 
 const char* conditionLabel(int code) {
@@ -158,7 +175,10 @@ bool fetch(double latitude, double longitude) {
       "&temperature_unit=celsius&timezone=auto&forecast_days=1";
 
   WiFiClientSecure client;
-  client.setInsecure();
+  if (!prepareSecureClient(&client, "weather")) {
+    s_last_http_status = 0;
+    return false;
+  }
 
   HTTPClient http;
   if (!http.begin(client, url)) {

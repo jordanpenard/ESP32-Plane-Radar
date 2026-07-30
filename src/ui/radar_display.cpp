@@ -82,6 +82,19 @@ bool s_cached_tag_block_valid[services::adsb::kMaxAircraft] = {};
 int s_cached_tag_text_scale_percent = -1;
 bool s_cached_tag_style_vlw = false;
 
+struct AircraftScreenTrack {
+  bool valid = false;
+  bool has_pos = false;
+  char key[9] = {};
+  int x = 0;
+  int y = 0;
+};
+
+AircraftScreenTrack s_aircraft_screen_tracks[services::adsb::kMaxAircraft] = {};
+size_t s_aircraft_track_replace_cursor = 0;
+uint8_t s_aircraft_track_range_index = 255;
+bool s_aircraft_track_use_miles = false;
+
 class DrawScope {
  public:
   explicit DrawScope(lgfx::LovyanGFX& gfx) : prev_(s_draw) { s_draw = &gfx; }
@@ -128,6 +141,10 @@ float findVlwSizeForHeight(int target_px) {
 
 void applyScaleStyle();
 void updateFooterCacheIfNeeded();
+void syncAircraftScreenTrackDomain();
+void smoothAircraftScreenPosition(const services::adsb::Aircraft& plane,
+                                  int target_x, int target_y, int* out_x,
+                                  int* out_y);
 
 const lgfx::GFXfont* pickGfxFontClosest(
     int target_px, const lgfx::GFXfont* const* candidates, size_t count) {
@@ -280,34 +297,17 @@ unsigned long interpolationExtrapolationElapsedMs(unsigned long raw_elapsed_ms) 
   return elapsed_ms;
 }
 
-float interpolationBlendAlpha(unsigned long raw_elapsed_ms) {
-  const unsigned long delay_ms =
-      static_cast<unsigned long>(services::settings::interpolationDelayMs());
-  if (delay_ms == 0 || raw_elapsed_ms >= delay_ms) {
-    return 1.0f;
-  }
-  return static_cast<float>(raw_elapsed_ms) /
-         static_cast<float>(delay_ms);
-}
-
 void interpolatedLatLon(const services::adsb::Aircraft& plane,
                         unsigned long raw_elapsed_ms,
                         unsigned long extrapolation_elapsed_ms, float* lat,
                         float* lon) {
+  (void)raw_elapsed_ms;
   if (lat == nullptr || lon == nullptr) {
     return;
   }
 
-  float blended_lat = plane.lat;
-  float blended_lon = plane.lon;
-  if (plane.has_prev_sample) {
-    const float alpha = interpolationBlendAlpha(raw_elapsed_ms);
-    blended_lat = plane.prev_lat + (plane.lat - plane.prev_lat) * alpha;
-    blended_lon = plane.prev_lon + (plane.lon - plane.prev_lon) * alpha;
-  }
-
-  *lat = blended_lat;
-  *lon = blended_lon;
+  *lat = plane.lat;
+  *lon = plane.lon;
   if (plane.gs_knots <= 0.0f) {
     return;
   }
@@ -327,6 +327,7 @@ void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
                                 unsigned long extrapolation_elapsed_ms,
                                 char* out,
                                 size_t out_len) {
+  (void)raw_elapsed_ms;
   if (out_len == 0) {
     return;
   }
@@ -344,11 +345,6 @@ void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
   }
 
   float altitude_ft = plane.altitude_ft;
-  if (plane.has_prev_sample && plane.prev_has_altitude) {
-    const float alpha = interpolationBlendAlpha(raw_elapsed_ms);
-    altitude_ft =
-        plane.prev_altitude_ft + (plane.altitude_ft - plane.prev_altitude_ft) * alpha;
-  }
 
   altitude_ft += plane.vertical_rate_fpm *
                  (static_cast<float>(extrapolation_elapsed_ms) / 60000.0f);
@@ -365,16 +361,12 @@ void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
 AltitudeTrend altitudeTrendState(const services::adsb::Aircraft& plane,
                                  unsigned long raw_elapsed_ms,
                                  unsigned long extrapolation_elapsed_ms) {
+  (void)raw_elapsed_ms;
   if (plane.on_ground || !plane.has_altitude) {
     return AltitudeTrend::kStable;
   }
 
   float current_ft = plane.altitude_ft;
-  if (plane.has_prev_sample && plane.prev_has_altitude) {
-    const float alpha = interpolationBlendAlpha(raw_elapsed_ms);
-    current_ft =
-        plane.prev_altitude_ft + (plane.altitude_ft - plane.prev_altitude_ft) * alpha;
-  }
   current_ft += plane.vertical_rate_fpm *
                 (static_cast<float>(extrapolation_elapsed_ms) / 60000.0f);
 
@@ -882,6 +874,7 @@ void sortBeyondDotsFarFirst(BeyondDotDrawItem* items, size_t count) {
 
 void drawAircraft() {
   initLabelMetrics();
+  syncAircraftScreenTrackDomain();
 
   const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
@@ -913,9 +906,12 @@ void drawAircraft() {
     offsetKmFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
 
     if (isInsideOuterRingKm(dist_km)) {
-      int x = 0;
-      int y = 0;
-      latLonToScreen(lat, lon, &x, &y);
+      int target_x = 0;
+      int target_y = 0;
+      latLonToScreen(lat, lon, &target_x, &target_y);
+      int x = target_x;
+      int y = target_y;
+      smoothAircraftScreenPosition(planes[i], target_x, target_y, &x, &y);
       items[draw_count].index = i;
       items[draw_count].x = x;
       items[draw_count].y = y;
@@ -1015,6 +1011,115 @@ void updateScaleLabelCache() {
   s_cached_scale_label_valid = true;
   s_cached_range_index = range_index;
   s_cached_scale_use_miles = use_miles;
+}
+
+void resetAircraftScreenTracks() {
+  memset(s_aircraft_screen_tracks, 0, sizeof(s_aircraft_screen_tracks));
+  s_aircraft_track_replace_cursor = 0;
+}
+
+void syncAircraftScreenTrackDomain() {
+  const uint8_t range_index = radar::rangeIndex();
+  const bool use_miles = radar::useMiles();
+  if (s_aircraft_track_range_index == range_index &&
+      s_aircraft_track_use_miles == use_miles) {
+    return;
+  }
+  s_aircraft_track_range_index = range_index;
+  s_aircraft_track_use_miles = use_miles;
+  resetAircraftScreenTracks();
+}
+
+void makeAircraftTrackKey(const services::adsb::Aircraft& plane, char* out,
+                         size_t out_len) {
+  if (out == nullptr || out_len == 0) {
+    return;
+  }
+  out[0] = '\0';
+  const char* source = plane.hex[0] != '\0' ? plane.hex : plane.callsign;
+  if (source == nullptr || source[0] == '\0') {
+    return;
+  }
+  size_t n = strnlen(source, out_len - 1);
+  memcpy(out, source, n);
+  out[n] = '\0';
+}
+
+AircraftScreenTrack* findAircraftTrackSlot(const char* key) {
+  if (key == nullptr || key[0] == '\0') {
+    return nullptr;
+  }
+
+  for (auto& track : s_aircraft_screen_tracks) {
+    if (track.valid && strcmp(track.key, key) == 0) {
+      return &track;
+    }
+  }
+
+  for (auto& track : s_aircraft_screen_tracks) {
+    if (!track.valid) {
+      strncpy(track.key, key, sizeof(track.key) - 1);
+      track.key[sizeof(track.key) - 1] = '\0';
+      track.valid = true;
+      track.has_pos = false;
+      return &track;
+    }
+  }
+
+  AircraftScreenTrack* slot =
+      &s_aircraft_screen_tracks[s_aircraft_track_replace_cursor %
+                                services::adsb::kMaxAircraft];
+  s_aircraft_track_replace_cursor =
+      (s_aircraft_track_replace_cursor + 1) % services::adsb::kMaxAircraft;
+  strncpy(slot->key, key, sizeof(slot->key) - 1);
+  slot->key[sizeof(slot->key) - 1] = '\0';
+  slot->valid = true;
+  slot->has_pos = false;
+  return slot;
+}
+
+void smoothAircraftScreenPosition(const services::adsb::Aircraft& plane,
+                                  int target_x, int target_y, int* out_x,
+                                  int* out_y) {
+  if (out_x == nullptr || out_y == nullptr) {
+    return;
+  }
+
+  char key[9] = {};
+  makeAircraftTrackKey(plane, key, sizeof(key));
+  AircraftScreenTrack* track = findAircraftTrackSlot(key);
+  if (track == nullptr) {
+    *out_x = target_x;
+    *out_y = target_y;
+    return;
+  }
+
+  if (!track->has_pos) {
+    track->x = target_x;
+    track->y = target_y;
+    track->has_pos = true;
+    *out_x = target_x;
+    *out_y = target_y;
+    return;
+  }
+
+  const int dx = target_x - track->x;
+  const int dy = target_y - track->y;
+  const float dist = sqrtf(static_cast<float>(dx * dx + dy * dy));
+
+  constexpr float kSnapJumpPx = 36.0f;
+  constexpr float kMaxStepPx = 6.0f;
+  if (dist > kSnapJumpPx || dist <= kMaxStepPx) {
+    track->x = target_x;
+    track->y = target_y;
+  } else {
+    const float scale = kMaxStepPx / dist;
+    track->x += static_cast<int>(lroundf(dx * scale));
+    track->y += static_cast<int>(lroundf(dy * scale));
+  }
+
+  *out_x = track->x;
+  *out_y = track->y;
 }
 
 void updateFooterCacheIfNeeded() {

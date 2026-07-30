@@ -1,5 +1,6 @@
 #include "services/adsb_client.h"
 
+#include <Arduino.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 
@@ -24,6 +25,21 @@ constexpr float kMetersPerFoot = 0.3048f;
 constexpr int kConnectAttemptMs = 200;
 constexpr unsigned long kAdsbRequestTimeoutMs = 10000;
 constexpr size_t kEnrichmentCacheSize = 48;
+constexpr uint32_t kMinHeapForSslBytes = 52000;
+
+bool prepareSecureClient(WiFiClientSecure* client, const char* tag) {
+  if (client == nullptr) {
+    return false;
+  }
+  const uint32_t free_heap = ESP.getFreeHeap();
+  if (free_heap < kMinHeapForSslBytes) {
+    Serial.printf("%s: skip TLS, low heap=%lu\n", tag,
+                  static_cast<unsigned long>(free_heap));
+    return false;
+  }
+  client->setInsecure();
+  return true;
+}
 
 Aircraft s_aircraft[kMaxAircraft];
 Aircraft s_previous_aircraft[kMaxAircraft];
@@ -497,7 +513,9 @@ bool fetchFlightDataJson(const String& url, const char* callsign,
                          JsonDocument* doc, bool* not_found) {
   *not_found = false;
   WiFiClientSecure client;
-  client.setInsecure();
+  if (!prepareSecureClient(&client, "flight data")) {
+    return false;
+  }
 
   HTTPClient http;
   if (!http.begin(client, url)) {
@@ -632,7 +650,9 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   url += String(dist_nm, 1);
 
   WiFiClientSecure client;
-  client.setInsecure();
+  if (!prepareSecureClient(&client, "adsb")) {
+    return false;
+  }
 
   HTTPClient http;
   if (!http.begin(client, url)) {

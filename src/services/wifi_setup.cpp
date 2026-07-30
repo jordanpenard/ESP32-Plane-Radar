@@ -1,5 +1,6 @@
 #include "services/wifi_setup.h"
 
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
 
@@ -394,6 +395,21 @@ bool validLatLon(double lat, double lon) {
   return lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0;
 }
 
+bool prepareSecureClient(WiFiClientSecure* client, const char* tag) {
+  if (client == nullptr) {
+    return false;
+  }
+  constexpr uint32_t kMinHeapForSslBytes = 52000;
+  const uint32_t free_heap = ESP.getFreeHeap();
+  if (free_heap < kMinHeapForSslBytes) {
+    Serial.printf("%s: skip TLS, low heap=%lu\n", tag,
+                  static_cast<unsigned long>(free_heap));
+    return false;
+  }
+  client->setInsecure();
+  return true;
+}
+
 bool fetchElevationMeters(double latitude, double longitude, float* elevation_m) {
   if (elevation_m == nullptr) {
     return false;
@@ -407,7 +423,9 @@ bool fetchElevationMeters(double latitude, double longitude, float* elevation_m)
   url += "&current=temperature_2m&forecast_days=1&timezone=auto";
 
   WiFiClientSecure client;
-  client.setInsecure();
+  if (!prepareSecureClient(&client, "altitude offset")) {
+    return false;
+  }
 
   HTTPClient http;
   if (!http.begin(client, url)) {
