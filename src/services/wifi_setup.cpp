@@ -159,6 +159,22 @@ WiFiManagerParameter s_param_altitude_offset(
   "alt_offset", "Altitude offset (same unit as Display distances)", "0", kAltitudeOffsetParamLen,
     kAltitudeOffsetInputAttrs);
 
+char s_alt_filter_enabled_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_alt_filter_enabled(
+  "alt_filter_enabled", "Altitude filter enabled", "T", 2,
+  s_alt_filter_enabled_checkbox_attrs, WFM_LABEL_AFTER);
+
+char s_alt_filter_under_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_alt_filter_under(
+  "alt_filter_under",
+  "Hide flights under threshold (unchecked: hide above)", "T", 2,
+  s_alt_filter_under_checkbox_attrs, WFM_LABEL_AFTER);
+
+WiFiManagerParameter s_param_alt_filter_value(
+  "alt_filter_value",
+  "Altitude filter threshold (same unit as Display distances)", "0",
+  kAltitudeOffsetParamLen, kAltitudeOffsetInputAttrs);
+
 WiFiManagerParameter s_param_interpolation_delay(
     "interp_delay_ms", "Interpolation delay (ms)", "0",
     kInterpolationDelayParamLen, kInterpolationDelayInputAttrs);
@@ -298,6 +314,23 @@ void refreshPortalParamDefaults() {
   snprintf(altitude_offset_buf, sizeof(altitude_offset_buf), "%.1f",
            altitude_offset);
   s_param_altitude_offset.setValue(altitude_offset_buf, kAltitudeOffsetParamLen);
+  refreshCheckboxAttrs(s_alt_filter_enabled_checkbox_attrs,
+                       sizeof(s_alt_filter_enabled_checkbox_attrs),
+                       services::settings::altitudeFilterEnabled());
+  s_param_alt_filter_enabled.setValue("T", 2);
+  refreshCheckboxAttrs(s_alt_filter_under_checkbox_attrs,
+                       sizeof(s_alt_filter_under_checkbox_attrs),
+                       services::settings::altitudeFilterHideUnder());
+  s_param_alt_filter_under.setValue("T", 2);
+  char altitude_filter_buf[kAltitudeOffsetParamLen + 1];
+  const float altitude_filter_value =
+      services::units::useImperialDistance()
+          ? services::settings::altitudeFilterThresholdFeet()
+          : services::settings::altitudeFilterThresholdFeet() * 0.3048f;
+  snprintf(altitude_filter_buf, sizeof(altitude_filter_buf), "%.1f",
+           altitude_filter_value);
+  s_param_alt_filter_value.setValue(altitude_filter_buf,
+                                    kAltitudeOffsetParamLen);
   char interpolation_delay_buf[kInterpolationDelayParamLen + 1];
   snprintf(interpolation_delay_buf, sizeof(interpolation_delay_buf), "%d",
            services::settings::interpolationDelayMs());
@@ -333,6 +366,9 @@ void onPortalParamsSaved() {
       s_param_footer.getValue(), s_param_weather.getValue(),
       s_param_fahrenheit.getValue(), services::units::useImperialDistance(),
       s_param_altitude_offset.getValue(),
+      s_param_alt_filter_enabled.getValue(),
+      s_param_alt_filter_under.getValue(),
+      s_param_alt_filter_value.getValue(),
       s_param_interpolation_delay.getValue(),
       s_param_clock24.getValue(),
       s_param_time_seconds.getValue(),
@@ -452,6 +488,9 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String weather = web.arg("show_weather");
   const String fahrenheit = web.arg("temp_f");
   const String altitude_offset = web.arg("alt_offset");
+  const String altitude_filter_enabled = web.arg("alt_filter_enabled");
+  const String altitude_filter_under = web.arg("alt_filter_under");
+  const String altitude_filter_value = web.arg("alt_filter_value");
   const String interpolation_delay_ms = web.arg("interp_delay_ms");
   const String clock24 = web.arg("clock_24");
   const String time_seconds = web.arg("time_seconds");
@@ -468,6 +507,8 @@ void savePortalParamsFromRequest(WebServer& web) {
   services::settings::saveFromPortal(
       footer.c_str(), weather.c_str(), fahrenheit.c_str(),
       services::units::useImperialDistance(), altitude_offset.c_str(),
+      altitude_filter_enabled.c_str(), altitude_filter_under.c_str(),
+      altitude_filter_value.c_str(),
       interpolation_delay_ms.c_str(), clock24.c_str(),
       time_seconds.c_str(),
       clock_follow_interp.c_str(),
@@ -527,6 +568,9 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_param_fahrenheit);
   wm.addParameter(&s_param_after_fahrenheit_break);
   wm.addParameter(&s_param_altitude_offset);
+  wm.addParameter(&s_param_alt_filter_enabled);
+  wm.addParameter(&s_param_alt_filter_under);
+  wm.addParameter(&s_param_alt_filter_value);
   wm.addParameter(&s_param_interpolation_delay);
   wm.addParameter(&s_param_interpolation_delay_presets);
   wm.addParameter(&s_param_altitude_offset_button);

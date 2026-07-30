@@ -583,6 +583,29 @@ void applyCachedEnrichment(Aircraft* plane) {
   }
 }
 
+bool altitudeFilteredOut(const Aircraft& plane) {
+  if (!services::settings::altitudeFilterEnabled()) {
+    return false;
+  }
+
+  float altitude_ft = 0.0f;
+  if (plane.on_ground) {
+    altitude_ft = 0.0f;
+  } else if (plane.has_altitude) {
+    altitude_ft = plane.altitude_ft;
+  } else {
+    // Keep planes with unknown altitude visible.
+    return false;
+  }
+
+  altitude_ft += services::settings::altitudeOffsetFeet();
+  const float threshold_ft = services::settings::altitudeFilterThresholdFeet();
+  if (services::settings::altitudeFilterHideUnder()) {
+    return altitude_ft < threshold_ft;
+  }
+  return altitude_ft > threshold_ft;
+}
+
 }  // namespace
 
 void setPollFn(PollFn fn) { s_poll_fn = fn; }
@@ -670,6 +693,9 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     s_aircraft[n].track_deg = pickTrackHeading(plane);
     s_aircraft[n].gs_knots = pickGroundSpeed(plane);
     fillTagFields(&s_aircraft[n], plane);
+    if (altitudeFilteredOut(s_aircraft[n])) {
+      continue;
+    }
 
     const Aircraft* prev =
       findPreviousAircraftSample(s_previous_aircraft, previous_count,

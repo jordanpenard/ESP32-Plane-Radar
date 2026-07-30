@@ -21,6 +21,9 @@ bool temperatureFahrenheit();
 bool altitudeMeters();
 float altitudeOffsetFeet();
 void setAltitudeOffsetFeet(float feet);
+bool altitudeFilterEnabled();
+bool altitudeFilterHideUnder();
+float altitudeFilterThresholdFeet();
 int interpolationDelayMs();
 bool clockFollowsInterpolationDelay();
 bool use24HourClock();
@@ -36,6 +39,9 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* fahrenheit_checkbox,
                     bool use_miles,
                     const char* altitude_offset_value,
+                    const char* altitude_filter_enabled_checkbox,
+                    const char* altitude_filter_under_checkbox,
+                    const char* altitude_filter_value,
                     const char* interpolation_delay_ms_value,
                     const char* clock24_checkbox,
                     const char* time_seconds_checkbox,
