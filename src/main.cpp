@@ -73,6 +73,15 @@ void renderRadarIfDue() {
   ui::radarDisplayRefreshAircraft();
 }
 
+void onNetworkPoll() {
+  wifiLoop();
+  if (!g_radar_visible || WiFi.status() != WL_CONNECTED ||
+      services::ota::inProgress()) {
+    return;
+  }
+  renderRadarIfDue();
+}
+
 }  // namespace
 
 void setup() {
@@ -89,8 +98,8 @@ void setup() {
   services::location::init();
   ui::radar::rangeInit();
   services::settings::init();
-  services::adsb::setPollFn(wifiLoop);
-  services::weather::setPollFn(wifiLoop);
+  services::adsb::setPollFn(onNetworkPoll);
+  services::weather::setPollFn(onNetworkPoll);
 
   if (wifiSetupConnect()) {
     showRadarIfConnected();

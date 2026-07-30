@@ -648,7 +648,12 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   size_t n = 0;
+  size_t scanned = 0;
   for (JsonObject plane : ac) {
+    ++scanned;
+    if ((scanned & 0x03u) == 0u) {
+      pollNetwork();
+    }
     if (n >= kMaxAircraft) {
       break;
     }
