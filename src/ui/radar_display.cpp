@@ -253,6 +253,12 @@ constexpr float kKmPerDeg = 111.0f;
 constexpr float kDegToRad = 0.01745329252f;
 constexpr unsigned long kInterpolationMaxMs = 4000UL;
 
+enum class AltitudeTrend : uint8_t {
+  kDown = 0,
+  kStable = 1,
+  kUp = 2,
+};
+
 unsigned long interpolationRawElapsedMs() {
   const unsigned long base_ms = services::adsb::lastFetchUpdateMs();
   if (base_ms == 0) {
@@ -354,6 +360,69 @@ void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
   }
   snprintf(out, out_len, "%d m",
            static_cast<int>(lroundf(altitude_ft * 0.3048f)));
+}
+
+AltitudeTrend altitudeTrendState(const services::adsb::Aircraft& plane,
+                                 unsigned long raw_elapsed_ms,
+                                 unsigned long extrapolation_elapsed_ms) {
+  if (plane.on_ground || !plane.has_altitude) {
+    return AltitudeTrend::kStable;
+  }
+
+  float current_ft = plane.altitude_ft;
+  if (plane.has_prev_sample && plane.prev_has_altitude) {
+    const float alpha = interpolationBlendAlpha(raw_elapsed_ms);
+    current_ft =
+        plane.prev_altitude_ft + (plane.altitude_ft - plane.prev_altitude_ft) * alpha;
+  }
+  current_ft += plane.vertical_rate_fpm *
+                (static_cast<float>(extrapolation_elapsed_ms) / 60000.0f);
+
+  if (plane.has_prev_sample && plane.prev_has_altitude) {
+    const float previous_ft = plane.prev_altitude_ft;
+    const float delta_ft = current_ft - previous_ft;
+    const float denom_ft = std::max(1.0f, fabsf(previous_ft));
+    const float relative_change = fabsf(delta_ft) / denom_ft;
+    if (relative_change < 0.01f) {
+      // Keep 1% stability rule but override when vertical rate is clearly
+      // climbing/descending so active changes are not shown as stable.
+      if (plane.vertical_rate_fpm > 200.0f) {
+        return AltitudeTrend::kUp;
+      }
+      if (plane.vertical_rate_fpm < -200.0f) {
+        return AltitudeTrend::kDown;
+      }
+      return AltitudeTrend::kStable;
+    }
+    return delta_ft > 0.0f ? AltitudeTrend::kUp : AltitudeTrend::kDown;
+  }
+
+  if (plane.vertical_rate_fpm > 50.0f) {
+    return AltitudeTrend::kUp;
+  }
+  if (plane.vertical_rate_fpm < -50.0f) {
+    return AltitudeTrend::kDown;
+  }
+  return AltitudeTrend::kStable;
+}
+
+uint16_t altitudeTrendColor(AltitudeTrend trend) {
+  auto panelColor = [](uint8_t r, uint8_t g, uint8_t b) -> uint16_t {
+    if (config::kDisplayRgbOrder) {
+      return s_draw->color565(b, g, r);
+    }
+    return s_draw->color565(r, g, b);
+  };
+
+  switch (trend) {
+    case AltitudeTrend::kUp:
+      return panelColor(64, 220, 96);
+    case AltitudeTrend::kDown:
+      return panelColor(235, 70, 70);
+    case AltitudeTrend::kStable:
+    default:
+      return radar::kColorLabel;
+  }
 }
 
 void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
@@ -616,7 +685,7 @@ int measureTagBlockWidth(size_t index, const services::adsb::Aircraft& plane,
 
 void drawAircraftTag(size_t index, int x, int y,
                      const services::adsb::Aircraft& plane,
-                     const char* altitude_text) {
+                     const char* altitude_text, uint16_t altitude_color) {
   initTagLabelMetrics();
   applyTagStyle();
 
@@ -656,7 +725,7 @@ void drawAircraftTag(size_t index, int x, int y,
   ly += line_h;
 
   if (altitude_text != nullptr && altitude_text[0] != '\0') {
-    s_draw->setTextColor(radar::kColorTagAltitude, radar::kColorBackground);
+    s_draw->setTextColor(altitude_color, radar::kColorBackground);
     s_draw->drawString(altitude_text, anchor_x, ly);
   }
 }
@@ -819,7 +888,8 @@ void drawAircraft() {
 
   AircraftDrawItem items[services::adsb::kMaxAircraft];
   BeyondDotDrawItem dots[services::adsb::kMaxAircraft];
-  char altitude_labels[services::adsb::kMaxAircraft][12] = {};
+  char altitude_labels[services::adsb::kMaxAircraft][20] = {};
+  uint16_t altitude_colors[services::adsb::kMaxAircraft] = {};
   size_t draw_count = 0;
   size_t dot_count = 0;
   const unsigned long raw_elapsed_ms = interpolationRawElapsedMs();
@@ -834,6 +904,8 @@ void drawAircraft() {
     formatInterpolatedAltitude(planes[i], raw_elapsed_ms,
                                extrapolation_elapsed_ms, altitude_labels[i],
                                sizeof(altitude_labels[i]));
+    altitude_colors[i] = altitudeTrendColor(
+      altitudeTrendState(planes[i], raw_elapsed_ms, extrapolation_elapsed_ms));
 
     float dx_km = 0.0f;
     float dy_km = 0.0f;
@@ -880,7 +952,8 @@ void drawAircraft() {
   }
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
-    drawAircraftTag(i, items[d].x, items[d].y, planes[i], altitude_labels[i]);
+    drawAircraftTag(i, items[d].x, items[d].y, planes[i], altitude_labels[i],
+                    altitude_colors[i]);
   }
 }
 
