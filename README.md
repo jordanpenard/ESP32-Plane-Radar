@@ -53,6 +53,7 @@ Changing coordinates no longer requires a credential reset. The new position is 
 | **Show current weather** | Shows current condition, temperature, and humidity |
 | **Temperature in Fahrenheit** | Uses °F instead of °C |
 | **Altitude in meters** | Uses meters for aircraft altitude tags instead of feet |
+| **Altitude offset** | Signed offset added to every aircraft altitude; enter it in the same unit as Display distances |
 | **Use 24-hour clock** | Uses 24-hour instead of compact 12-hour time |
 | **Radar text size (%)** | Scales radar labels and footer text from 80–130%; default is 110% |
 | **OTA password** | Password for firmware uploads; username is `admin` |

@@ -3,8 +3,12 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
 #include <Preferences.h>
 #include <esp_system.h>
 #include <esp_wifi.h>
@@ -12,6 +16,8 @@
 #ifdef WM_MDNS
 #include <ESPmDNS.h>
 #endif
+
+#include <WiFiClientSecure.h>
 
 #include "config.h"
 #include "services/display_settings.h"
@@ -75,6 +81,9 @@ constexpr char kLatitudeInputAttrs[] =
     "type=\"number\" step=\"0.000001\" min=\"-90\" max=\"90\"";
 constexpr char kLongitudeInputAttrs[] =
     "type=\"number\" step=\"0.000001\" min=\"-180\" max=\"180\"";
+constexpr int kAltitudeOffsetParamLen = 16;
+constexpr char kAltitudeOffsetInputAttrs[] =
+  "type=\"number\" step=\"0.1\"";
 constexpr int kOtaPasswordParamLen =
     static_cast<int>(services::settings::kOtaPasswordMaxLen);
 constexpr int kTextScaleParamLen = 4;
@@ -106,10 +115,14 @@ WiFiManagerParameter s_param_fahrenheit(
     "temp_f", "Temperature in Fahrenheit", "T", 2,
     s_fahrenheit_checkbox_attrs, WFM_LABEL_AFTER);
 
-char s_altitude_meters_checkbox_attrs[32] = "type=\"checkbox\"";
-WiFiManagerParameter s_param_altitude_meters(
-  "alt_m", "Altitude in meters", "T", 2,
-  s_altitude_meters_checkbox_attrs, WFM_LABEL_AFTER);
+WiFiManagerParameter s_param_after_fahrenheit_break("<br/>");
+
+WiFiManagerParameter s_param_altitude_offset(
+  "alt_offset", "Altitude offset (same unit as Display distances)", "0", kAltitudeOffsetParamLen,
+    kAltitudeOffsetInputAttrs);
+
+WiFiManagerParameter s_param_altitude_offset_button(
+    "<div style=\"margin-top:.5rem\"><button type=\"button\" onclick=\"var lat=document.querySelector('[name=radar_lat]');var lon=document.querySelector('[name=radar_lon]');var url='/altitudeoffsetauto';if(lat&&lon){url+='?lat='+encodeURIComponent(lat.value)+'&lon='+encodeURIComponent(lon.value);}window.location=url;\">Use location elevation</button></div>");
 
 char s_clock24_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_clock24("clock_24", "Use 24-hour clock", "T", 2,
@@ -171,10 +184,14 @@ void refreshPortalParamDefaults() {
                        sizeof(s_fahrenheit_checkbox_attrs),
                        services::settings::temperatureFahrenheit());
   s_param_fahrenheit.setValue("T", 2);
-  refreshCheckboxAttrs(s_altitude_meters_checkbox_attrs,
-                       sizeof(s_altitude_meters_checkbox_attrs),
-                       services::settings::altitudeMeters());
-  s_param_altitude_meters.setValue("T", 2);
+  s_param_after_fahrenheit_break.setValue("<br/>", 5);
+  char altitude_offset_buf[kAltitudeOffsetParamLen + 1];
+  const float altitude_offset = ui::radar::useMiles()
+                                    ? services::settings::altitudeOffsetFeet()
+                                    : services::settings::altitudeOffsetFeet() * 0.3048f;
+  snprintf(altitude_offset_buf, sizeof(altitude_offset_buf), "%.1f",
+           altitude_offset);
+  s_param_altitude_offset.setValue(altitude_offset_buf, kAltitudeOffsetParamLen);
   refreshCheckboxAttrs(s_clock24_checkbox_attrs,
                        sizeof(s_clock24_checkbox_attrs),
                        services::settings::use24HourClock());
@@ -195,10 +212,113 @@ void onPortalParamsSaved() {
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
   services::settings::saveFromPortal(
       s_param_footer.getValue(), s_param_weather.getValue(),
-      s_param_fahrenheit.getValue(), s_param_altitude_meters.getValue(),
+      s_param_fahrenheit.getValue(), ui::radar::useMiles(),
+      s_param_altitude_offset.getValue(),
       s_param_clock24.getValue(),
       s_param_text_scale.getValue(),
       s_param_ota_password.getValue());
+}
+
+bool parseQueryCoord(const String& value, double* out) {
+  if (out == nullptr || value.length() == 0) {
+    return false;
+  }
+  char* end = nullptr;
+  const double parsed = std::strtod(value.c_str(), &end);
+  if (end == value.c_str() || (end != nullptr && *end != '\0')) {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
+
+bool validLatLon(double lat, double lon) {
+  return lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0;
+}
+
+bool fetchElevationMeters(double latitude, double longitude, float* elevation_m) {
+  if (elevation_m == nullptr) {
+    return false;
+  }
+
+  String url = config::kWeatherApiBase;
+  url += "?latitude=";
+  url += String(latitude, 6);
+  url += "&longitude=";
+  url += String(longitude, 6);
+  url += "&current=temperature_2m&forecast_days=1&timezone=auto";
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  if (!http.begin(client, url)) {
+    Serial.println("altitude offset: http.begin failed");
+    return false;
+  }
+  http.setConnectTimeout(config::kWeatherRequestTimeoutMs);
+  http.setTimeout(config::kWeatherRequestTimeoutMs);
+
+  const int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("altitude offset: HTTP %d\n", code);
+    http.end();
+    return false;
+  }
+
+  const String payload = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  const DeserializationError error = deserializeJson(doc, payload);
+  if (error) {
+    Serial.printf("altitude offset: JSON parse error: %s\n", error.c_str());
+    return false;
+  }
+
+  const float elevation = doc["elevation"] | NAN;
+  if (!std::isfinite(elevation)) {
+    Serial.println("altitude offset: missing elevation");
+    return false;
+  }
+
+  *elevation_m = elevation;
+  return true;
+}
+
+void handleAltitudeOffsetAuto() {
+  if (!s_wm.server) {
+    return;
+  }
+
+  WebServer& web = *s_wm.server;
+  double latitude = services::location::lat();
+  double longitude = services::location::lon();
+
+  if (web.hasArg("lat") && !parseQueryCoord(web.arg("lat"), &latitude)) {
+    web.send(400, "text/plain", "Invalid latitude");
+    return;
+  }
+  if (web.hasArg("lon") && !parseQueryCoord(web.arg("lon"), &longitude)) {
+    web.send(400, "text/plain", "Invalid longitude");
+    return;
+  }
+  if (!validLatLon(latitude, longitude)) {
+    web.send(400, "text/plain", "Invalid latitude/longitude range");
+    return;
+  }
+
+  float elevation_m = 0.0f;
+  if (!fetchElevationMeters(latitude, longitude, &elevation_m)) {
+    web.send(502, "text/plain", "Could not fetch location elevation");
+    return;
+  }
+
+  services::settings::setAltitudeOffsetFeet(-elevation_m / 0.3048f);
+  refreshPortalParamDefaults();
+
+  web.sendHeader("Location", "/param", true);
+  web.send(302, "text/plain", "");
 }
 
 void savePortalParamsFromRequest(WebServer& web) {
@@ -209,7 +329,7 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String footer = web.arg("show_footer");
   const String weather = web.arg("show_weather");
   const String fahrenheit = web.arg("temp_f");
-  const String altitude_meters = web.arg("alt_m");
+  const String altitude_offset = web.arg("alt_offset");
   const String clock24 = web.arg("clock_24");
   const String text_scale = web.arg("text_scale");
   const String ota_password = web.arg("ota_password");
@@ -222,7 +342,7 @@ void savePortalParamsFromRequest(WebServer& web) {
   ui::radar::saveRunwaysFromPortal(runways.c_str());
   services::settings::saveFromPortal(
       footer.c_str(), weather.c_str(), fahrenheit.c_str(),
-      altitude_meters.c_str(), clock24.c_str(),
+      ui::radar::useMiles(), altitude_offset.c_str(), clock24.c_str(),
       text_scale.c_str(), ota_password.c_str());
   refreshPortalParamDefaults();
 }
@@ -257,6 +377,7 @@ void attachSettingsRoutes() {
   // Register before WiFiManager's built-in /paramsave handler so the custom
   // confirmation can redirect back to Setup.
   s_wm.server->on("/paramsave", HTTP_POST, handleSettingsSaved);
+  s_wm.server->on("/altitudeoffsetauto", HTTP_GET, handleAltitudeOffsetAuto);
 }
 
 void attachPortalParams(WiFiManager& wm) {
@@ -268,7 +389,9 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_param_footer);
   wm.addParameter(&s_param_weather);
   wm.addParameter(&s_param_fahrenheit);
-  wm.addParameter(&s_param_altitude_meters);
+  wm.addParameter(&s_param_after_fahrenheit_break);
+  wm.addParameter(&s_param_altitude_offset);
+  wm.addParameter(&s_param_altitude_offset_button);
   wm.addParameter(&s_param_clock24);
   wm.addParameter(&s_param_after_clock_break);
   wm.addParameter(&s_param_text_scale);
