@@ -20,14 +20,25 @@ constexpr time_t kMinimumValidEpoch = 1609459200;  // 2021-01-01 UTC
 
 bool s_started = false;
 bool s_valid = false;
+bool s_stale = false;
 float s_temperature_c = 0.0f;
 int s_humidity_percent = 0;
 int s_weather_code = -1;
 int32_t s_utc_offset_seconds = 0;
 unsigned long s_last_attempt_ms = 0;
+unsigned long s_last_success_ms = 0;
+int s_last_http_status = 0;
+char s_last_error[32] = "none";
 double s_last_latitude = 999.0;
 double s_last_longitude = 999.0;
 PollFn s_poll_fn = nullptr;
+
+void setLastError(const char* message) {
+  if (message == nullptr || message[0] == '\0') {
+    message = "unknown";
+  }
+  snprintf(s_last_error, sizeof(s_last_error), "%s", message);
+}
 
 bool clockValid() { return time(nullptr) >= kMinimumValidEpoch; }
 
@@ -151,6 +162,8 @@ bool fetch(double latitude, double longitude) {
 
   HTTPClient http;
   if (!http.begin(client, url)) {
+    s_last_http_status = 0;
+    setLastError("http.begin failed");
     Serial.println("weather: http.begin failed");
     return false;
   }
@@ -161,10 +174,13 @@ bool fetch(double latitude, double longitude) {
   const int code = http.GET();
   pollNetwork();
   if (code != HTTP_CODE_OK) {
+    s_last_http_status = code;
+    setLastError("http error");
     Serial.printf("weather: HTTP %d\n", code);
     http.end();
     return false;
   }
+  s_last_http_status = code;
 
   const String payload = http.getString();
   http.end();
@@ -173,6 +189,7 @@ bool fetch(double latitude, double longitude) {
   JsonDocument doc;
   const DeserializationError error = deserializeJson(doc, payload);
   if (error) {
+    setLastError("json parse error");
     Serial.printf("weather: JSON parse error: %s\n", error.c_str());
     return false;
   }
@@ -181,6 +198,7 @@ bool fetch(double latitude, double longitude) {
   if (current.isNull() || !current["temperature_2m"].is<float>() ||
       !current["relative_humidity_2m"].is<int>() ||
       !current["weather_code"].is<int>()) {
+    setLastError("incomplete response");
     Serial.println("weather: incomplete response");
     return false;
   }
@@ -191,6 +209,9 @@ bool fetch(double latitude, double longitude) {
   s_utc_offset_seconds = doc["utc_offset_seconds"] | 0;
   seedClockFromApiTime(current["time"] | nullptr, s_utc_offset_seconds);
   s_valid = true;
+  s_stale = false;
+  s_last_success_ms = millis();
+  setLastError("none");
   Serial.printf("weather: %.1f C, %d%%, code %d, UTC%+ld\n", s_temperature_c,
                 s_humidity_percent, s_weather_code,
                 static_cast<long>(s_utc_offset_seconds));
@@ -221,10 +242,29 @@ bool refreshIfDue(double latitude, double longitude, bool force) {
   s_last_attempt_ms = now;
   s_last_latitude = latitude;
   s_last_longitude = longitude;
-  return fetch(latitude, longitude);
+  if (fetch(latitude, longitude)) {
+    return true;
+  }
+
+  // Keep last successful weather visible when a refresh fails.
+  s_stale = s_valid;
+  return false;
 }
 
 bool valid() { return s_valid; }
+
+bool stale() { return s_stale; }
+
+int lastHttpStatus() { return s_last_http_status; }
+
+const char* lastError() { return s_last_error; }
+
+unsigned long lastSuccessAgeSec() {
+  if (s_last_success_ms == 0) {
+    return 0;
+  }
+  return (millis() - s_last_success_ms) / 1000UL;
+}
 
 void formatWeatherLine(char* out, size_t out_len, int max_width) {
   if (out_len == 0) {
@@ -247,19 +287,20 @@ void formatWeatherLine(char* out, size_t out_len, int max_width) {
   const long rounded_temperature = static_cast<long>(lroundf(temperature));
 
   if (max_width <= 148) {
-    snprintf(out, out_len, "%s %ld%c %d%%", compact, rounded_temperature,
-             unit, s_humidity_percent);
+    snprintf(out, out_len, "%s %ld%c %d%%%s", compact, rounded_temperature,
+             unit, s_humidity_percent, s_stale ? " STALE" : "");
     return;
   }
 
   if (max_width <= 176) {
-    snprintf(out, out_len, "%s %ld%c %d%%", token, rounded_temperature,
-             unit, s_humidity_percent);
+    snprintf(out, out_len, "%s %ld%c %d%%%s", token, rounded_temperature,
+             unit, s_humidity_percent, s_stale ? " STALE" : "");
     return;
   }
 
-  snprintf(out, out_len, "%s %ld%c %d%% %s", token, rounded_temperature,
-           unit, s_humidity_percent, conditionTrail(s_weather_code));
+  snprintf(out, out_len, "%s %ld%c %d%% %s%s", token, rounded_temperature,
+           unit, s_humidity_percent, conditionTrail(s_weather_code),
+           s_stale ? " STALE" : "");
 }
 
 void formatDateTimeLine(char* out, size_t out_len) {

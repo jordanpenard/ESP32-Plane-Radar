@@ -529,6 +529,42 @@ void drawFooterLine(const char* text, int y, int max_width, uint16_t color) {
   s_draw->drawString(fitted, radar::kCenterX, y);
 }
 
+void drawHealthBadge() {
+  if (!services::settings::weatherEnabled()) {
+    return;
+  }
+
+  const char* badge_text = nullptr;
+  uint16_t badge_bg = radar::kColorBackground;
+  if (!services::weather::valid()) {
+    badge_text = "WX!";
+    badge_bg = s_draw->color565(136, 0, 0);
+  } else if (services::weather::stale()) {
+    badge_text = "STALE";
+    badge_bg = s_draw->color565(120, 80, 0);
+  }
+
+  if (badge_text == nullptr) {
+    return;
+  }
+
+  s_draw->setFont(&lgfx_fonts::Font0);
+  applyBitmapTextScale(*s_draw);
+  const int text_w = s_draw->textWidth(badge_text);
+  const int text_h = s_draw->fontHeight();
+  constexpr int kPadX = 3;
+  constexpr int kPadY = 2;
+  const int box_w = text_w + kPadX * 2;
+  const int box_h = text_h + kPadY * 2;
+  const int x = radar::kSize - box_w - 4;
+  const int y = 4;
+
+  s_draw->fillRect(x, y, box_w, box_h, badge_bg);
+  s_draw->setTextDatum(textdatum_t::top_left);
+  s_draw->setTextColor(radar::kColorLabel, badge_bg);
+  s_draw->drawString(badge_text, x + kPadX, y + kPadY);
+}
+
 void drawFooter() {
   if (!services::settings::footerEnabled()) {
     return;
@@ -796,6 +832,7 @@ void renderFrame() {
     const DrawScope scope(s_frame);
     drawAircraft();
     drawFooter();
+    drawHealthBadge();
   }
   s_frame.pushSprite(0, 0);
   tft.setTextDatum(textdatum_t::top_left);
@@ -817,6 +854,7 @@ void radarDisplayDraw() {
   drawStaticGrid(tft);
   drawAircraft();
   drawFooter();
+  drawHealthBadge();
   tft.setTextDatum(textdatum_t::top_left);
 }
 

@@ -52,11 +52,15 @@ Changing coordinates no longer requires a credential reset. The new position is 
 | **Show weather and clock** | Enables/disables the complete bottom footer |
 | **Show current weather** | Shows current condition, temperature, and humidity |
 | **Temperature in Fahrenheit** | Uses °F instead of °C |
-| **Altitude in meters** | Uses meters for aircraft altitude tags instead of feet |
 | **Altitude offset** | Signed offset added to every aircraft altitude; enter it in the same unit as Display distances |
 | **Use 24-hour clock** | Uses 24-hour instead of compact 12-hour time |
 | **Radar text size (%)** | Scales radar labels and footer text from 80–130%; default is 110% |
 | **OTA password** | Password for firmware uploads; username is `admin` |
+
+Portal tools:
+
+- **Use location elevation** button to auto-fill altitude offset from current latitude/longitude
+- **Diagnostics** link (`/diag`) for uptime, heap, Wi-Fi state, and weather fetch health
 
 After a reset, the device reboots and shows the setup screen immediately (no “Connecting” loop on stale credentials).
 
@@ -101,11 +105,11 @@ Origin/destination is not transmitted in ADS-B messages. The firmware enriches e
 
 ### Weather and time
 
-The bottom overlay uses the radar coordinates. Current conditions come from [Open-Meteo](https://open-meteo.com/) every 15 minutes; its location timezone offset and NTP provide the clock. The two rows use plain-language conditions and label relative humidity (`RH`):
+The bottom overlay uses the radar coordinates. Current conditions come from [Open-Meteo](https://open-meteo.com/) every 15 minutes; its location timezone offset and NTP provide the clock. The weather row adapts to available width and may show a `STALE` suffix if the latest refresh failed but a previous valid sample is still being shown:
 
 ```text
-OVERCAST 82F RH100%
-21:45 25 JUL
+RAIN 68F 82% RAIN
+2026-07-30 21:45
 ```
 
 Disable just the weather row or the complete footer in **Setup**. Radar and

@@ -17,6 +17,10 @@ void setPollFn(PollFn fn);
 bool refreshIfDue(double latitude, double longitude, bool force = false);
 
 bool valid();
+bool stale();
+int lastHttpStatus();
+const char* lastError();
+unsigned long lastSuccessAgeSec();
 void formatWeatherLine(char* out, size_t out_len, int max_width);
 void formatDateTimeLine(char* out, size_t out_len);
 

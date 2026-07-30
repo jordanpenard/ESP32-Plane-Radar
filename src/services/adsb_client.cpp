@@ -11,6 +11,7 @@
 
 #include "config.h"
 #include "services/display_settings.h"
+#include "services/unit_policy.h"
 #include "ui/radar_range.h"
 
 namespace services::adsb {
@@ -209,7 +210,7 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
   if (readJsonFloat(plane, "alt_baro", &alt) ||
       readJsonFloat(plane, "alt_geom", &alt)) {
     alt += services::settings::altitudeOffsetFeet();
-    if (ui::radar::useMiles()) {
+    if (services::units::useImperialDistance()) {
       snprintf(out, out_len, "%d ft", static_cast<int>(lroundf(alt)));
       return;
     }

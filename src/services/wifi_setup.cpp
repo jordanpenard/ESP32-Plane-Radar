@@ -23,6 +23,8 @@
 #include "services/display_settings.h"
 #include "services/ota_update.h"
 #include "services/radar_location.h"
+#include "services/unit_policy.h"
+#include "services/weather_time.h"
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
 
@@ -75,6 +77,36 @@ void startLanWebPortal();
 void stopLanWebPortal();
 bool wifiLinkUp();
 void attachSettingsRoutes();
+
+String diagnosticsHtml() {
+  String html;
+  html.reserve(1200);
+  html += "<!doctype html><html lang='en'><head><meta charset='utf-8'>";
+  html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+  html += "<title>Plane Radar Diagnostics</title>";
+  html += "<style>body{font-family:verdana;padding:1rem}table{border-collapse:collapse;width:100%;max-width:42rem}th,td{border:1px solid #ddd;padding:.5rem;text-align:left}th{background:#f6f6f6}</style>";
+  html += "</head><body><h2>Diagnostics</h2><table>";
+
+  html += "<tr><th>Item</th><th>Value</th></tr>";
+  html += "<tr><td>Uptime (s)</td><td>" + String(millis() / 1000UL) + "</td></tr>";
+  html += "<tr><td>Free heap</td><td>" + String(ESP.getFreeHeap()) + "</td></tr>";
+  html += "<tr><td>WiFi status</td><td>" +
+    String(WiFi.status() == WL_CONNECTED ? "connected" : "disconnected") +
+    "</td></tr>";
+  html += "<tr><td>WiFi IP</td><td>" + WiFi.localIP().toString() + "</td></tr>";
+  html += "<tr><td>Weather valid</td><td>" +
+    String(services::weather::valid() ? "yes" : "no") + "</td></tr>";
+  html += "<tr><td>Weather stale</td><td>" +
+    String(services::weather::stale() ? "yes" : "no") + "</td></tr>";
+  html += "<tr><td>Weather last HTTP</td><td>" +
+    String(services::weather::lastHttpStatus()) + "</td></tr>";
+  html += "<tr><td>Weather last error</td><td>" +
+    String(services::weather::lastError()) + "</td></tr>";
+  html += "<tr><td>Weather data age (s)</td><td>" +
+    String(services::weather::lastSuccessAgeSec()) + "</td></tr>";
+  html += "</table><p><a href='/param'>Back to setup</a></p></body></html>";
+  return html;
+}
 
 constexpr int kCoordParamLen = 20;
 constexpr char kLatitudeInputAttrs[] =
@@ -152,6 +184,9 @@ WiFiManagerParameter s_param_ota_password(
     "ota_password", "OTA password (user: admin)", "", kOtaPasswordParamLen,
     kOtaPasswordAttrs);
 
+WiFiManagerParameter s_param_diag_link(
+  "<div style=\"margin-top:.75rem\"><a href=\"/diag\">Diagnostics</a></div>");
+
 void refreshCheckboxAttrs(char* attrs, size_t attrs_len, bool checked) {
   snprintf(attrs, attrs_len, "type=\"checkbox\"%s",
            checked ? " checked" : "");
@@ -186,7 +221,7 @@ void refreshPortalParamDefaults() {
   s_param_fahrenheit.setValue("T", 2);
   s_param_after_fahrenheit_break.setValue("<br/>", 5);
   char altitude_offset_buf[kAltitudeOffsetParamLen + 1];
-  const float altitude_offset = ui::radar::useMiles()
+  const float altitude_offset = services::units::useImperialDistance()
                                     ? services::settings::altitudeOffsetFeet()
                                     : services::settings::altitudeOffsetFeet() * 0.3048f;
   snprintf(altitude_offset_buf, sizeof(altitude_offset_buf), "%.1f",
@@ -212,7 +247,7 @@ void onPortalParamsSaved() {
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
   services::settings::saveFromPortal(
       s_param_footer.getValue(), s_param_weather.getValue(),
-      s_param_fahrenheit.getValue(), ui::radar::useMiles(),
+      s_param_fahrenheit.getValue(), services::units::useImperialDistance(),
       s_param_altitude_offset.getValue(),
       s_param_clock24.getValue(),
       s_param_text_scale.getValue(),
@@ -342,9 +377,16 @@ void savePortalParamsFromRequest(WebServer& web) {
   ui::radar::saveRunwaysFromPortal(runways.c_str());
   services::settings::saveFromPortal(
       footer.c_str(), weather.c_str(), fahrenheit.c_str(),
-      ui::radar::useMiles(), altitude_offset.c_str(), clock24.c_str(),
+      services::units::useImperialDistance(), altitude_offset.c_str(), clock24.c_str(),
       text_scale.c_str(), ota_password.c_str());
   refreshPortalParamDefaults();
+}
+
+void handleDiagnosticsPage() {
+  if (!s_wm.server) {
+    return;
+  }
+  s_wm.server->send(200, "text/html", diagnosticsHtml());
 }
 
 void handleSettingsSaved() {
@@ -378,6 +420,7 @@ void attachSettingsRoutes() {
   // confirmation can redirect back to Setup.
   s_wm.server->on("/paramsave", HTTP_POST, handleSettingsSaved);
   s_wm.server->on("/altitudeoffsetauto", HTTP_GET, handleAltitudeOffsetAuto);
+  s_wm.server->on("/diag", HTTP_GET, handleDiagnosticsPage);
 }
 
 void attachPortalParams(WiFiManager& wm) {
@@ -397,6 +440,7 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_param_text_scale);
   wm.addParameter(&s_param_text_scale_output);
   wm.addParameter(&s_param_ota_password);
+  wm.addParameter(&s_param_diag_link);
   wm.setSaveParamsCallback(onPortalParamsSaved);
 }
 
