@@ -62,6 +62,23 @@ lgfx::LovyanGFX* s_draw = &tft;
 LGFX_Sprite s_frame(&tft);
 bool s_frame_ready = false;
 
+char s_cached_scale_label[12] = {};
+bool s_cached_scale_label_valid = false;
+uint8_t s_cached_range_index = 255;
+bool s_cached_scale_use_miles = false;
+
+char s_cached_weather_line[32] = {};
+char s_cached_date_time[20] = {};
+bool s_cached_footer_valid = false;
+unsigned long s_cached_footer_ms = 0;
+bool s_cached_footer_weather_enabled = false;
+
+int s_cached_tag_block_width[services::adsb::kMaxAircraft] = {};
+uint32_t s_cached_tag_block_hash[services::adsb::kMaxAircraft] = {};
+bool s_cached_tag_block_valid[services::adsb::kMaxAircraft] = {};
+int s_cached_tag_text_scale_percent = -1;
+bool s_cached_tag_style_vlw = false;
+
 class DrawScope {
  public:
   explicit DrawScope(lgfx::LovyanGFX& gfx) : prev_(s_draw) { s_draw = &gfx; }
@@ -107,6 +124,7 @@ float findVlwSizeForHeight(int target_px) {
 }
 
 void applyScaleStyle();
+void updateFooterCacheIfNeeded();
 
 const lgfx::GFXfont* pickGfxFontClosest(
     int target_px, const lgfx::GFXfont* const* candidates, size_t count) {
@@ -409,8 +427,55 @@ void applyTagStyle() {
   }
 }
 
-int measureTagBlockWidth(const services::adsb::Aircraft& plane) {
-  applyTagStyle();
+uint32_t hashTagCString(uint32_t hash, const char* text) {
+  constexpr uint32_t kFnvPrime = 16777619u;
+  if (text == nullptr) {
+    return (hash ^ 0xFFu) * kFnvPrime;
+  }
+  for (const unsigned char* p = reinterpret_cast<const unsigned char*>(text);
+       *p != '\0'; ++p) {
+    hash ^= static_cast<uint32_t>(*p);
+    hash *= kFnvPrime;
+  }
+  hash ^= 0xFFu;
+  hash *= kFnvPrime;
+  return hash;
+}
+
+uint32_t buildTagContentHash(const services::adsb::Aircraft& plane) {
+  uint32_t hash = 2166136261u;
+  const char* identity =
+      plane.route[0] != '\0' ? plane.route : plane.callsign;
+  hash = hashTagCString(hash, identity);
+  hash = hashTagCString(hash, plane.type);
+  hash = hashTagCString(hash, plane.alt);
+  return hash;
+}
+
+void invalidateTagWidthCache() {
+  memset(s_cached_tag_block_valid, 0, sizeof(s_cached_tag_block_valid));
+}
+
+void refreshTagWidthCacheStyle() {
+  const int scale_percent = services::settings::textScalePercent();
+  if (s_cached_tag_text_scale_percent == scale_percent &&
+      s_cached_tag_style_vlw == s_tag_use_vlw) {
+    return;
+  }
+  s_cached_tag_text_scale_percent = scale_percent;
+  s_cached_tag_style_vlw = s_tag_use_vlw;
+  invalidateTagWidthCache();
+}
+
+int measureTagBlockWidth(size_t index, const services::adsb::Aircraft& plane) {
+  refreshTagWidthCacheStyle();
+  const uint32_t content_hash = buildTagContentHash(plane);
+  if (index < services::adsb::kMaxAircraft &&
+      s_cached_tag_block_valid[index] &&
+      s_cached_tag_block_hash[index] == content_hash) {
+    return s_cached_tag_block_width[index];
+  }
+
   int max_w = 0;
   const char* identity =
       plane.route[0] != '\0' ? plane.route : plane.callsign;
@@ -432,15 +497,23 @@ int measureTagBlockWidth(const services::adsb::Aircraft& plane) {
       max_w = w;
     }
   }
+
+  if (index < services::adsb::kMaxAircraft) {
+    s_cached_tag_block_hash[index] = content_hash;
+    s_cached_tag_block_width[index] = max_w;
+    s_cached_tag_block_valid[index] = true;
+  }
+
   return max_w;
 }
 
-void drawAircraftTag(int x, int y, const services::adsb::Aircraft& plane) {
+void drawAircraftTag(size_t index, int x, int y,
+                     const services::adsb::Aircraft& plane) {
   initTagLabelMetrics();
   applyTagStyle();
 
   const int line_h = s_draw->fontHeight();
-  const int block_w = measureTagBlockWidth(plane);
+  const int block_w = measureTagBlockWidth(index, plane);
   const int block_h = line_h * 3;
   int ly = y - block_h / 2;
 
@@ -570,6 +643,8 @@ void drawFooter() {
     return;
   }
 
+  updateFooterCacheIfNeeded();
+
   // The trapezoid follows the narrowing bottom edge of the round panel.
   s_draw->fillTriangle(28, radar::kFooterTopY, 212, radar::kFooterTopY, 168,
                        radar::kFooterBottomY,
@@ -580,18 +655,14 @@ void drawFooter() {
   s_draw->drawFastHLine(44, radar::kFooterTopY, 152, radar::kColorGrid);
 
   if (services::settings::weatherEnabled()) {
-    char weather[32] = {};
-    services::weather::formatWeatherLine(weather, sizeof(weather), 176);
-    drawFooterLine(weather, radar::kFooterWeatherY, 176,
+    drawFooterLine(s_cached_weather_line, radar::kFooterWeatherY, 176,
                    radar::kColorTagType);
   }
 
-  char date_time[20] = {};
-  services::weather::formatDateTimeLine(date_time, sizeof(date_time));
   const int time_y = services::settings::weatherEnabled()
                          ? radar::kFooterTimeY
                          : radar::kFooterTimeOnlyY;
-  drawFooterLine(date_time, time_y, 128,
+  drawFooterLine(s_cached_date_time, time_y, 128,
                  radar::kColorTagAltitude);
 }
 
@@ -689,7 +760,7 @@ void drawAircraft() {
   }
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
-    drawAircraftTag(items[d].x, items[d].y, planes[i]);
+    drawAircraftTag(i, items[d].x, items[d].y, planes[i]);
   }
 }
 
@@ -738,6 +809,44 @@ void drawScaleLabelWithBackground(const char* text, int x, int y) {
   s_draw->drawString(text, x, y);
 }
 
+void updateScaleLabelCache() {
+  const uint8_t range_index = radar::rangeIndex();
+  const bool use_miles = radar::useMiles();
+  if (s_cached_scale_label_valid && s_cached_range_index == range_index &&
+      s_cached_scale_use_miles == use_miles) {
+    return;
+  }
+
+  radar::formatCurrentRing3Label(s_cached_scale_label,
+                                 sizeof(s_cached_scale_label));
+  s_cached_scale_label_valid = true;
+  s_cached_range_index = range_index;
+  s_cached_scale_use_miles = use_miles;
+}
+
+void updateFooterCacheIfNeeded() {
+  const unsigned long now = millis();
+  const bool weather_enabled = services::settings::weatherEnabled();
+  if (s_cached_footer_valid &&
+      s_cached_footer_weather_enabled == weather_enabled &&
+      now - s_cached_footer_ms < 1000UL) {
+    return;
+  }
+
+  if (weather_enabled) {
+    services::weather::formatWeatherLine(s_cached_weather_line,
+                                         sizeof(s_cached_weather_line), 176);
+  } else {
+    s_cached_weather_line[0] = '\0';
+  }
+
+  services::weather::formatDateTimeLine(s_cached_date_time,
+                                        sizeof(s_cached_date_time));
+  s_cached_footer_valid = true;
+  s_cached_footer_weather_enabled = weather_enabled;
+  s_cached_footer_ms = now;
+}
+
 void drawGridRing(int cx, int cy, int r, uint16_t color) {
   if (r <= 0) {
     return;
@@ -784,9 +893,8 @@ int scaleLabelAnchorX(int cx, int outer_radius) {
 }
 
 void drawScaleLabel(int cx, int cy, int outer_radius) {
-  char scale_label[12];
-  radar::formatCurrentRing3Label(scale_label, sizeof(scale_label));
-  drawScaleLabelWithBackground(scale_label,
+  updateScaleLabelCache();
+  drawScaleLabelWithBackground(s_cached_scale_label,
                                scaleLabelAnchorX(cx, outer_radius), cy);
 }
 
