@@ -18,7 +18,9 @@ constexpr char kKeyFahrenheit[] = "tempF";
 constexpr char kKeyAltitudeMeters[] = "altM";
 constexpr char kKeyAltitudeOffsetFeet[] = "altOffFt";
 constexpr char kKeyInterpolationDelayMs[] = "interpDly";
+constexpr char kKeyClockFollowInterp[] = "clkIntrp";
 constexpr char kKeyClock24[] = "time24";
+constexpr char kKeyTimeSeconds[] = "timeSec";
 constexpr char kKeyTextScale[] = "fontPct";
 constexpr char kKeyOtaPassword[] = "otaPass";
 
@@ -29,8 +31,10 @@ bool s_temperature_fahrenheit = false;
 bool s_altitude_meters = false;
 float s_altitude_offset_feet = 0.0f;
 bool s_use_24_hour_clock = true;
+bool s_show_time_seconds = false;
 int s_text_scale_percent = kTextScaleDefaultPercent;
 int s_interpolation_delay_ms = kInterpolationDelayDefaultMs;
+bool s_clock_follows_interpolation_delay = true;
 
 bool checkboxChecked(const char* value) {
   if (value == nullptr || value[0] == '\0') {
@@ -164,8 +168,10 @@ void loadDefaults() {
   s_altitude_meters = false;
   s_altitude_offset_feet = 0.0f;
   s_use_24_hour_clock = true;
+  s_show_time_seconds = false;
   s_text_scale_percent = kTextScaleDefaultPercent;
   s_interpolation_delay_ms = kInterpolationDelayDefaultMs;
+  s_clock_follows_interpolation_delay = true;
 }
 
 void persist() {
@@ -179,8 +185,10 @@ void persist() {
   prefs.putBool(kKeyAltitudeMeters, s_altitude_meters);
   prefs.putFloat(kKeyAltitudeOffsetFeet, s_altitude_offset_feet);
   prefs.putBool(kKeyClock24, s_use_24_hour_clock);
+  prefs.putBool(kKeyTimeSeconds, s_show_time_seconds);
   prefs.putInt(kKeyTextScale, s_text_scale_percent);
   prefs.putInt(kKeyInterpolationDelayMs, s_interpolation_delay_ms);
+  prefs.putBool(kKeyClockFollowInterp, s_clock_follows_interpolation_delay);
   prefs.putString(kKeyOtaPassword, s_ota_password);
   prefs.end();
 }
@@ -201,10 +209,13 @@ void init() {
   s_altitude_meters = prefs.getBool(kKeyAltitudeMeters, false);
   s_altitude_offset_feet = prefs.getFloat(kKeyAltitudeOffsetFeet, 0.0f);
   s_use_24_hour_clock = prefs.getBool(kKeyClock24, true);
+  s_show_time_seconds = prefs.getBool(kKeyTimeSeconds, false);
   s_text_scale_percent = clampTextScalePercent(
       prefs.getInt(kKeyTextScale, kTextScaleDefaultPercent));
-    s_interpolation_delay_ms = clampInterpolationDelayMs(
+  s_interpolation_delay_ms = clampInterpolationDelayMs(
       prefs.getInt(kKeyInterpolationDelayMs, kInterpolationDelayDefaultMs));
+  s_clock_follows_interpolation_delay =
+      prefs.getBool(kKeyClockFollowInterp, true);
 
   String value = prefs.getString(kKeyOtaPassword, config::kDefaultOtaPassword);
   copyCleanText(value.c_str(), s_ota_password, sizeof(s_ota_password));
@@ -233,7 +244,13 @@ void setAltitudeOffsetFeet(float feet) {
 
 int interpolationDelayMs() { return s_interpolation_delay_ms; }
 
+bool clockFollowsInterpolationDelay() {
+  return s_clock_follows_interpolation_delay;
+}
+
 bool use24HourClock() { return s_use_24_hour_clock; }
+
+bool showTimeSeconds() { return s_show_time_seconds; }
 
 int textScalePercent() { return s_text_scale_percent; }
 
@@ -245,6 +262,8 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* altitude_offset_value,
                     const char* interpolation_delay_ms_value,
                     const char* clock24_checkbox,
+                    const char* time_seconds_checkbox,
+                    const char* clock_follow_interp_checkbox,
                     const char* text_scale_percent_value,
                     const char* ota_password_value) {
   s_footer_enabled = checkboxChecked(footer_checkbox);
@@ -255,6 +274,9 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
     s_altitude_offset_feet = use_miles ? altitude_offset : altitude_offset / 0.3048f;
   }
   s_use_24_hour_clock = checkboxChecked(clock24_checkbox);
+  s_show_time_seconds = checkboxChecked(time_seconds_checkbox);
+  s_clock_follows_interpolation_delay =
+      checkboxChecked(clock_follow_interp_checkbox);
   int text_scale_percent = s_text_scale_percent;
   if (parseTextScalePercent(text_scale_percent_value, &text_scale_percent)) {
     s_text_scale_percent = text_scale_percent;

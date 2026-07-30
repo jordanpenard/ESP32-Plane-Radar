@@ -303,23 +303,32 @@ void formatWeatherLine(char* out, size_t out_len, int max_width) {
            s_stale ? " STALE" : "");
 }
 
-void formatDateTimeLine(char* out, size_t out_len) {
+void formatDateTimeLine(char* out, size_t out_len, bool include_seconds,
+                        unsigned long display_delay_ms) {
   if (out_len == 0) {
     return;
   }
 
   const time_t utc_now = time(nullptr);
   if (utc_now < kMinimumValidEpoch) {
-    snprintf(out, out_len, "---- -- --:--");
+    snprintf(out, out_len, include_seconds ? "---- -- --:--:--"
+                                           : "---- -- --:--");
     return;
   }
 
-  const time_t local_now = utc_now + s_utc_offset_seconds;
+  const time_t delayed_utc_now = utc_now -
+                                 static_cast<time_t>(display_delay_ms / 1000UL);
+  const time_t local_now = delayed_utc_now + s_utc_offset_seconds;
   tm local = {};
   gmtime_r(&local_now, &local);
   const int year = local.tm_year + 1900;
   const int month = local.tm_mon + 1;
   const int day = local.tm_mday;
+  if (include_seconds) {
+    snprintf(out, out_len, "%04d-%02d-%02d %02d:%02d:%02d", year, month, day,
+             local.tm_hour, local.tm_min, local.tm_sec);
+    return;
+  }
   snprintf(out, out_len, "%04d-%02d-%02d %02d:%02d", year, month, day,
            local.tm_hour, local.tm_min);
 }

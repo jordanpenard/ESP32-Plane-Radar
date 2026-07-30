@@ -22,6 +22,8 @@ int lastHttpStatus();
 const char* lastError();
 unsigned long lastSuccessAgeSec();
 void formatWeatherLine(char* out, size_t out_len, int max_width);
-void formatDateTimeLine(char* out, size_t out_len);
+void formatDateTimeLine(char* out, size_t out_len,
+						bool include_seconds = false,
+						unsigned long display_delay_ms = 0);
 
 }  // namespace services::weather

@@ -14,6 +14,12 @@ struct Aircraft {
   float vertical_rate_fpm;
   bool has_altitude;
   bool on_ground;
+  bool has_prev_sample;
+  float prev_lat;
+  float prev_lon;
+  float prev_altitude_ft;
+  bool prev_has_altitude;
+  bool prev_on_ground;
   char hex[7];
   char callsign[9];
   /** IATA/ICAO origin-destination pair, for example "BOS-IND". */

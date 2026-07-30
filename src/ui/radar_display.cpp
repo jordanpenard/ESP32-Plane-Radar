@@ -73,6 +73,8 @@ char s_cached_date_time[20] = {};
 bool s_cached_footer_valid = false;
 unsigned long s_cached_footer_ms = 0;
 bool s_cached_footer_weather_enabled = false;
+bool s_cached_footer_show_seconds = false;
+unsigned long s_cached_footer_delay_ms = 0;
 
 int s_cached_tag_block_width[services::adsb::kMaxAircraft] = {};
 uint32_t s_cached_tag_block_hash[services::adsb::kMaxAircraft] = {};
@@ -251,12 +253,15 @@ constexpr float kKmPerDeg = 111.0f;
 constexpr float kDegToRad = 0.01745329252f;
 constexpr unsigned long kInterpolationMaxMs = 4000UL;
 
-unsigned long interpolationElapsedMs() {
+unsigned long interpolationRawElapsedMs() {
   const unsigned long base_ms = services::adsb::lastFetchUpdateMs();
   if (base_ms == 0) {
     return 0;
   }
-  const unsigned long raw_elapsed_ms = millis() - base_ms;
+  return millis() - base_ms;
+}
+
+unsigned long interpolationExtrapolationElapsedMs(unsigned long raw_elapsed_ms) {
   const unsigned long delay_ms =
       static_cast<unsigned long>(services::settings::interpolationDelayMs());
   if (raw_elapsed_ms <= delay_ms) {
@@ -269,19 +274,40 @@ unsigned long interpolationElapsedMs() {
   return elapsed_ms;
 }
 
+float interpolationBlendAlpha(unsigned long raw_elapsed_ms) {
+  const unsigned long delay_ms =
+      static_cast<unsigned long>(services::settings::interpolationDelayMs());
+  if (delay_ms == 0 || raw_elapsed_ms >= delay_ms) {
+    return 1.0f;
+  }
+  return static_cast<float>(raw_elapsed_ms) /
+         static_cast<float>(delay_ms);
+}
+
 void interpolatedLatLon(const services::adsb::Aircraft& plane,
-                        unsigned long elapsed_ms, float* lat, float* lon) {
+                        unsigned long raw_elapsed_ms,
+                        unsigned long extrapolation_elapsed_ms, float* lat,
+                        float* lon) {
   if (lat == nullptr || lon == nullptr) {
     return;
   }
 
-  *lat = plane.lat;
-  *lon = plane.lon;
+  float blended_lat = plane.lat;
+  float blended_lon = plane.lon;
+  if (plane.has_prev_sample) {
+    const float alpha = interpolationBlendAlpha(raw_elapsed_ms);
+    blended_lat = plane.prev_lat + (plane.lat - plane.prev_lat) * alpha;
+    blended_lon = plane.prev_lon + (plane.lon - plane.prev_lon) * alpha;
+  }
+
+  *lat = blended_lat;
+  *lon = blended_lon;
   if (plane.gs_knots <= 0.0f) {
     return;
   }
 
-  const float elapsed_h = static_cast<float>(elapsed_ms) / 3600000.0f;
+  const float elapsed_h =
+      static_cast<float>(extrapolation_elapsed_ms) / 3600000.0f;
   const float distance_km = plane.gs_knots * 1.852f * elapsed_h;
   const float rad = plane.track_deg * kDegToRad;
   const float dx_km = sinf(rad) * distance_km;
@@ -291,7 +317,9 @@ void interpolatedLatLon(const services::adsb::Aircraft& plane,
 }
 
 void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
-                                unsigned long elapsed_ms, char* out,
+                                unsigned long raw_elapsed_ms,
+                                unsigned long extrapolation_elapsed_ms,
+                                char* out,
                                 size_t out_len) {
   if (out_len == 0) {
     return;
@@ -310,8 +338,14 @@ void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
   }
 
   float altitude_ft = plane.altitude_ft;
+  if (plane.has_prev_sample && plane.prev_has_altitude) {
+    const float alpha = interpolationBlendAlpha(raw_elapsed_ms);
+    altitude_ft =
+        plane.prev_altitude_ft + (plane.altitude_ft - plane.prev_altitude_ft) * alpha;
+  }
+
   altitude_ft += plane.vertical_rate_fpm *
-                 (static_cast<float>(elapsed_ms) / 60000.0f);
+                 (static_cast<float>(extrapolation_elapsed_ms) / 60000.0f);
   altitude_ft += services::settings::altitudeOffsetFeet();
 
   if (services::units::useImperialDistance()) {
@@ -788,13 +822,17 @@ void drawAircraft() {
   char altitude_labels[services::adsb::kMaxAircraft][12] = {};
   size_t draw_count = 0;
   size_t dot_count = 0;
-  const unsigned long elapsed_ms = interpolationElapsedMs();
+  const unsigned long raw_elapsed_ms = interpolationRawElapsedMs();
+  const unsigned long extrapolation_elapsed_ms =
+      interpolationExtrapolationElapsedMs(raw_elapsed_ms);
 
   for (size_t i = 0; i < n; ++i) {
     float lat = 0.0f;
     float lon = 0.0f;
-    interpolatedLatLon(planes[i], elapsed_ms, &lat, &lon);
-    formatInterpolatedAltitude(planes[i], elapsed_ms, altitude_labels[i],
+    interpolatedLatLon(planes[i], raw_elapsed_ms, extrapolation_elapsed_ms,
+                       &lat, &lon);
+    formatInterpolatedAltitude(planes[i], raw_elapsed_ms,
+                               extrapolation_elapsed_ms, altitude_labels[i],
                                sizeof(altitude_labels[i]));
 
     float dx_km = 0.0f;
@@ -909,8 +947,15 @@ void updateScaleLabelCache() {
 void updateFooterCacheIfNeeded() {
   const unsigned long now = millis();
   const bool weather_enabled = services::settings::weatherEnabled();
+  const bool show_seconds = services::settings::showTimeSeconds();
+    const unsigned long display_delay_ms =
+      services::settings::clockFollowsInterpolationDelay()
+        ? static_cast<unsigned long>(services::settings::interpolationDelayMs())
+        : 0UL;
   if (s_cached_footer_valid &&
       s_cached_footer_weather_enabled == weather_enabled &&
+      s_cached_footer_show_seconds == show_seconds &&
+      s_cached_footer_delay_ms == display_delay_ms &&
       now - s_cached_footer_ms < 1000UL) {
     return;
   }
@@ -922,10 +967,28 @@ void updateFooterCacheIfNeeded() {
     s_cached_weather_line[0] = '\0';
   }
 
-  services::weather::formatDateTimeLine(s_cached_date_time,
-                                        sizeof(s_cached_date_time));
+  char with_seconds[24] = {};
+  if (show_seconds) {
+    services::weather::formatDateTimeLine(with_seconds, sizeof(with_seconds),
+                                          true, display_delay_ms);
+    applyFooterStyle();
+    if (s_draw->textWidth(with_seconds) <= 128) {
+      strncpy(s_cached_date_time, with_seconds, sizeof(s_cached_date_time) - 1);
+      s_cached_date_time[sizeof(s_cached_date_time) - 1] = '\0';
+    } else {
+      services::weather::formatDateTimeLine(s_cached_date_time,
+                                            sizeof(s_cached_date_time), false,
+                                            display_delay_ms);
+    }
+  } else {
+    services::weather::formatDateTimeLine(s_cached_date_time,
+                                          sizeof(s_cached_date_time), false,
+                                          display_delay_ms);
+  }
   s_cached_footer_valid = true;
   s_cached_footer_weather_enabled = weather_enabled;
+  s_cached_footer_show_seconds = show_seconds;
+  s_cached_footer_delay_ms = display_delay_ms;
   s_cached_footer_ms = now;
 }
 

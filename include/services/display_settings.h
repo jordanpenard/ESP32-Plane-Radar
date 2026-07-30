@@ -22,7 +22,9 @@ bool altitudeMeters();
 float altitudeOffsetFeet();
 void setAltitudeOffsetFeet(float feet);
 int interpolationDelayMs();
+bool clockFollowsInterpolationDelay();
 bool use24HourClock();
+bool showTimeSeconds();
 int textScalePercent();
 const char* otaPassword();
 
@@ -36,6 +38,8 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* altitude_offset_value,
                     const char* interpolation_delay_ms_value,
                     const char* clock24_checkbox,
+                    const char* time_seconds_checkbox,
+                    const char* clock_follow_interp_checkbox,
                     const char* text_scale_percent_value,
                     const char* ota_password_value);
 

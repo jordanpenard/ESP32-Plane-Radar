@@ -174,6 +174,16 @@ WiFiManagerParameter s_param_clock24("clock_24", "Use 24-hour clock", "T", 2,
                                      s_clock24_checkbox_attrs,
                                      WFM_LABEL_AFTER);
 
+char s_time_seconds_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_time_seconds(
+  "time_seconds", "Show seconds in clock", "T", 2,
+  s_time_seconds_checkbox_attrs, WFM_LABEL_AFTER);
+
+char s_clock_follow_interp_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_clock_follow_interp(
+    "clock_follow_interp", "Clock follows interpolation delay", "T", 2,
+    s_clock_follow_interp_checkbox_attrs, WFM_LABEL_AFTER);
+
 WiFiManagerParameter s_param_after_clock_break("<br/>");
 
 constexpr char kTextScaleAttrs[] =
@@ -297,6 +307,14 @@ void refreshPortalParamDefaults() {
                        sizeof(s_clock24_checkbox_attrs),
                        services::settings::use24HourClock());
   s_param_clock24.setValue("T", 2);
+  refreshCheckboxAttrs(s_time_seconds_checkbox_attrs,
+                       sizeof(s_time_seconds_checkbox_attrs),
+                       services::settings::showTimeSeconds());
+  s_param_time_seconds.setValue("T", 2);
+  refreshCheckboxAttrs(s_clock_follow_interp_checkbox_attrs,
+                       sizeof(s_clock_follow_interp_checkbox_attrs),
+                       services::settings::clockFollowsInterpolationDelay());
+  s_param_clock_follow_interp.setValue("T", 2);
   char text_scale_buf[kTextScaleParamLen + 1];
   snprintf(text_scale_buf, sizeof(text_scale_buf), "%d",
            services::settings::textScalePercent());
@@ -317,6 +335,8 @@ void onPortalParamsSaved() {
       s_param_altitude_offset.getValue(),
       s_param_interpolation_delay.getValue(),
       s_param_clock24.getValue(),
+      s_param_time_seconds.getValue(),
+      s_param_clock_follow_interp.getValue(),
       s_param_text_scale.getValue(),
       s_param_ota_password.getValue());
 }
@@ -434,6 +454,8 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String altitude_offset = web.arg("alt_offset");
   const String interpolation_delay_ms = web.arg("interp_delay_ms");
   const String clock24 = web.arg("clock_24");
+  const String time_seconds = web.arg("time_seconds");
+  const String clock_follow_interp = web.arg("clock_follow_interp");
   const String text_scale = web.arg("text_scale");
   const String ota_password = web.arg("ota_password");
 
@@ -447,6 +469,8 @@ void savePortalParamsFromRequest(WebServer& web) {
       footer.c_str(), weather.c_str(), fahrenheit.c_str(),
       services::units::useImperialDistance(), altitude_offset.c_str(),
       interpolation_delay_ms.c_str(), clock24.c_str(),
+      time_seconds.c_str(),
+      clock_follow_interp.c_str(),
       text_scale.c_str(), ota_password.c_str());
   refreshPortalParamDefaults();
 }
@@ -507,6 +531,8 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_param_interpolation_delay_presets);
   wm.addParameter(&s_param_altitude_offset_button);
   wm.addParameter(&s_param_clock24);
+  wm.addParameter(&s_param_time_seconds);
+  wm.addParameter(&s_param_clock_follow_interp);
   wm.addParameter(&s_param_after_clock_break);
   wm.addParameter(&s_param_text_scale);
   wm.addParameter(&s_param_text_scale_output);

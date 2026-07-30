@@ -26,6 +26,7 @@ constexpr unsigned long kAdsbRequestTimeoutMs = 10000;
 constexpr size_t kEnrichmentCacheSize = 48;
 
 Aircraft s_aircraft[kMaxAircraft];
+Aircraft s_previous_aircraft[kMaxAircraft];
 size_t s_aircraft_count = 0;
 PollFn s_poll_fn = nullptr;
 unsigned long s_last_fetch_update_ms = 0;
@@ -185,6 +186,25 @@ bool isOnGround(const JsonObject& plane) {
   return strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0;
 }
 
+bool sameAircraftIdentity(const Aircraft& a, const Aircraft& b) {
+  if (a.hex[0] != '\0' && b.hex[0] != '\0' && strcmp(a.hex, b.hex) == 0) {
+    return true;
+  }
+  return a.callsign[0] != '\0' && b.callsign[0] != '\0' &&
+         strcmp(a.callsign, b.callsign) == 0;
+}
+
+const Aircraft* findPreviousAircraftSample(const Aircraft* previous,
+                                           size_t previous_count,
+                                           const Aircraft& current) {
+  for (size_t i = 0; i < previous_count; ++i) {
+    if (sameAircraftIdentity(previous[i], current)) {
+      return &previous[i];
+    }
+  }
+  return nullptr;
+}
+
 void copyJsonStringTrimmed(const JsonObject& obj, const char* key, char* out,
                            size_t out_len) {
   if (out_len == 0) {
@@ -232,6 +252,13 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
 }
 
 void fillTagFields(Aircraft* ac, const JsonObject& plane) {
+  ac->has_prev_sample = false;
+  ac->prev_lat = ac->lat;
+  ac->prev_lon = ac->lon;
+  ac->prev_altitude_ft = ac->altitude_ft;
+  ac->prev_has_altitude = false;
+  ac->prev_on_ground = ac->on_ground;
+
   ac->on_ground = isOnGround(plane);
   ac->has_altitude = false;
   ac->altitude_ft = 0.0f;
@@ -567,6 +594,9 @@ const Aircraft* aircraftList() { return s_aircraft; }
 unsigned long lastFetchUpdateMs() { return s_last_fetch_update_ms; }
 
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
+  const size_t previous_count = s_aircraft_count;
+  memcpy(s_previous_aircraft, s_aircraft, sizeof(s_aircraft));
+
   s_last_center_lat = center_lat;
   s_last_center_lon = center_lon;
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
@@ -635,6 +665,19 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     s_aircraft[n].track_deg = pickTrackHeading(plane);
     s_aircraft[n].gs_knots = pickGroundSpeed(plane);
     fillTagFields(&s_aircraft[n], plane);
+
+    const Aircraft* prev =
+      findPreviousAircraftSample(s_previous_aircraft, previous_count,
+                                   s_aircraft[n]);
+    if (prev != nullptr) {
+      s_aircraft[n].has_prev_sample = true;
+      s_aircraft[n].prev_lat = prev->lat;
+      s_aircraft[n].prev_lon = prev->lon;
+      s_aircraft[n].prev_altitude_ft = prev->altitude_ft;
+      s_aircraft[n].prev_has_altitude = prev->has_altitude;
+      s_aircraft[n].prev_on_ground = prev->on_ground;
+    }
+
     applyCachedEnrichment(&s_aircraft[n]);
     ++n;
   }
