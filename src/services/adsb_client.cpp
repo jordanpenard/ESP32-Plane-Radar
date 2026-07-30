@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "config.h"
+#include "services/display_settings.h"
 
 namespace services::adsb {
 
@@ -17,6 +18,7 @@ namespace {
 
 constexpr char kApiBase[] = "https://opendata.adsb.fi/api/v3/lat/";
 constexpr float kKmPerNm = 1.852f;
+constexpr float kMetersPerFoot = 0.3048f;
 constexpr int kConnectAttemptMs = 200;
 constexpr unsigned long kAdsbRequestTimeoutMs = 10000;
 constexpr size_t kEnrichmentCacheSize = 48;
@@ -205,6 +207,11 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
   float alt = 0.0f;
   if (readJsonFloat(plane, "alt_baro", &alt) ||
       readJsonFloat(plane, "alt_geom", &alt)) {
+    if (services::settings::altitudeMeters()) {
+      snprintf(out, out_len, "%d m",
+               static_cast<int>(lroundf(alt * kMetersPerFoot)));
+      return;
+    }
     snprintf(out, out_len, "%d ft", static_cast<int>(lroundf(alt)));
   }
 }
