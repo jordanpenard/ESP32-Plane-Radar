@@ -52,6 +52,34 @@ const char* conditionLabel(int code) {
   return "WEATHER";
 }
 
+const char* conditionToken(int code) {
+  if (code == 0) return "SUNNY";
+  if (code == 1) return "MOSTLY SUNNY";
+  if (code == 2) return "PARTLY";
+  if (code == 3) return "CLOUDY";
+  if (code == 45 || code == 48) return "FOG";
+  if (code >= 51 && code <= 57) return "DRIZZLE";
+  if (code >= 61 && code <= 67) return "RAIN";
+  if (code >= 71 && code <= 77) return "SNOW";
+  if (code >= 80 && code <= 82) return "SHOWERS";
+  if (code == 85 || code == 86) return "SNOW";
+  if (code >= 95 && code <= 99) return "STORM";
+  return "WX";
+}
+
+const char* conditionTrail(int code) {
+  if (code == 0 || code == 1) return "CLEAR";
+  if (code == 2 || code == 3) return "CLOUDY";
+  if (code == 45 || code == 48) return "FOG";
+  if (code >= 51 && code <= 57) return "DRIZZLE";
+  if (code >= 61 && code <= 67) return "RAIN";
+  if (code >= 71 && code <= 77) return "SNOW";
+  if (code >= 80 && code <= 82) return "SHOWERS";
+  if (code == 85 || code == 86) return "SNOW";
+  if (code >= 95 && code <= 99) return "STORM";
+  return "WX";
+}
+
 int64_t daysFromCivil(int year, unsigned month, unsigned day) {
   year -= month <= 2;
   const int era = (year >= 0 ? year : year - 399) / 400;
@@ -198,8 +226,9 @@ void formatWeatherLine(char* out, size_t out_len) {
   if (settings::temperatureFahrenheit()) {
     temperature = temperature * 9.0f / 5.0f + 32.0f;
   }
-  snprintf(out, out_len, "%s %.0f%c RH%d%%", conditionLabel(s_weather_code),
-           lroundf(temperature), unit, s_humidity_percent);
+  snprintf(out, out_len, "%s %ld%c %d%% %s", conditionToken(s_weather_code),
+           static_cast<long>(lroundf(temperature)), unit, s_humidity_percent,
+           conditionTrail(s_weather_code));
 }
 
 void formatDateTimeLine(char* out, size_t out_len) {
