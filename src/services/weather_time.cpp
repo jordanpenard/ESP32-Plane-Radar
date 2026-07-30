@@ -80,6 +80,21 @@ const char* conditionTrail(int code) {
   return "WX";
 }
 
+const char* conditionCompact(int code) {
+  if (code == 0) return "SUN";
+  if (code == 1) return "SUN";
+  if (code == 2) return "PCLD";
+  if (code == 3) return "CLDY";
+  if (code == 45 || code == 48) return "FOG";
+  if (code >= 51 && code <= 57) return "DRZL";
+  if (code >= 61 && code <= 67) return "RAIN";
+  if (code >= 71 && code <= 77) return "SNOW";
+  if (code >= 80 && code <= 82) return "SHWR";
+  if (code == 85 || code == 86) return "SNOW";
+  if (code >= 95 && code <= 99) return "STRM";
+  return "WX";
+}
+
 int64_t daysFromCivil(int year, unsigned month, unsigned day) {
   year -= month <= 2;
   const int era = (year >= 0 ? year : year - 399) / 400;
@@ -211,12 +226,12 @@ bool refreshIfDue(double latitude, double longitude, bool force) {
 
 bool valid() { return s_valid; }
 
-void formatWeatherLine(char* out, size_t out_len) {
+void formatWeatherLine(char* out, size_t out_len, int max_width) {
   if (out_len == 0) {
     return;
   }
   if (!s_valid) {
-    snprintf(out, out_len, "WEATHER --");
+    snprintf(out, out_len, "WX N/A");
     return;
   }
 
@@ -226,9 +241,25 @@ void formatWeatherLine(char* out, size_t out_len) {
   if (settings::temperatureFahrenheit()) {
     temperature = temperature * 9.0f / 5.0f + 32.0f;
   }
-  snprintf(out, out_len, "%s %ld%c %d%% %s", conditionToken(s_weather_code),
-           static_cast<long>(lroundf(temperature)), unit, s_humidity_percent,
-           conditionTrail(s_weather_code));
+
+  const char* token = conditionToken(s_weather_code);
+  const char* compact = conditionCompact(s_weather_code);
+  const long rounded_temperature = static_cast<long>(lroundf(temperature));
+
+  if (max_width <= 148) {
+    snprintf(out, out_len, "%s %ld%c %d%%", compact, rounded_temperature,
+             unit, s_humidity_percent);
+    return;
+  }
+
+  if (max_width <= 176) {
+    snprintf(out, out_len, "%s %ld%c %d%%", token, rounded_temperature,
+             unit, s_humidity_percent);
+    return;
+  }
+
+  snprintf(out, out_len, "%s %ld%c %d%% %s", token, rounded_temperature,
+           unit, s_humidity_percent, conditionTrail(s_weather_code));
 }
 
 void formatDateTimeLine(char* out, size_t out_len) {

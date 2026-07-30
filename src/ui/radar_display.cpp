@@ -545,7 +545,7 @@ void drawFooter() {
 
   if (services::settings::weatherEnabled()) {
     char weather[32] = {};
-    services::weather::formatWeatherLine(weather, sizeof(weather));
+    services::weather::formatWeatherLine(weather, sizeof(weather), 176);
     drawFooterLine(weather, radar::kFooterWeatherY, 176,
                    radar::kColorTagType);
   }
