@@ -10,6 +10,10 @@ struct Aircraft {
   float nose_deg;
   float track_deg;
   float gs_knots;
+  float altitude_ft;
+  float vertical_rate_fpm;
+  bool has_altitude;
+  bool on_ground;
   char hex[7];
   char callsign[9];
   /** IATA/ICAO origin-destination pair, for example "BOS-IND". */
@@ -30,6 +34,9 @@ void setPollFn(PollFn fn);
 
 /** Fetch aircraft within fetch_radius_km of center_lat/lon from adsb.fi. */
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km);
+
+/** millis() when the last successful fetchUpdate completed. */
+unsigned long lastFetchUpdateMs();
 
 /**
  * Look up one uncached aircraft through ADSBDB. Results are rate-limited and

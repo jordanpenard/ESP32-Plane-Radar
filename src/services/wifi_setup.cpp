@@ -116,9 +116,15 @@ constexpr char kLongitudeInputAttrs[] =
 constexpr int kAltitudeOffsetParamLen = 16;
 constexpr char kAltitudeOffsetInputAttrs[] =
   "type=\"number\" step=\"0.1\"";
+constexpr int kInterpolationDelayParamLen = 6;
+constexpr char kInterpolationDelayInputAttrs[] =
+  "type=\"number\" min=\"0\" max=\"5000\" step=\"1\"";
+constexpr int kInterpolationPresetCount = 4;
 constexpr int kOtaPasswordParamLen =
     static_cast<int>(services::settings::kOtaPasswordMaxLen);
 constexpr int kTextScaleParamLen = 4;
+
+char s_interpolation_preset_html[1800] = {};
 
 WiFiManagerParameter s_param_lat("radar_lat", "Latitude (deg)", "0",
                                 kCoordParamLen, kLatitudeInputAttrs);
@@ -152,6 +158,13 @@ WiFiManagerParameter s_param_after_fahrenheit_break("<br/>");
 WiFiManagerParameter s_param_altitude_offset(
   "alt_offset", "Altitude offset (same unit as Display distances)", "0", kAltitudeOffsetParamLen,
     kAltitudeOffsetInputAttrs);
+
+WiFiManagerParameter s_param_interpolation_delay(
+    "interp_delay_ms", "Interpolation delay (ms)", "0",
+    kInterpolationDelayParamLen, kInterpolationDelayInputAttrs);
+
+WiFiManagerParameter s_param_interpolation_delay_presets(
+  s_interpolation_preset_html);
 
 WiFiManagerParameter s_param_altitude_offset_button(
     "<div style=\"margin-top:.5rem\"><button type=\"button\" onclick=\"var lat=document.querySelector('[name=radar_lat]');var lon=document.querySelector('[name=radar_lon]');var url='/altitudeoffsetauto';if(lat&&lon){url+='?lat='+encodeURIComponent(lat.value)+'&lon='+encodeURIComponent(lon.value);}window.location=url;\">Use location elevation</button></div>");
@@ -192,7 +205,55 @@ void refreshCheckboxAttrs(char* attrs, size_t attrs_len, bool checked) {
            checked ? " checked" : "");
 }
 
+int clampInterpolationDelayMs(int value) {
+  if (value < services::settings::kInterpolationDelayMinMs) {
+    return services::settings::kInterpolationDelayMinMs;
+  }
+  if (value > services::settings::kInterpolationDelayMaxMs) {
+    return services::settings::kInterpolationDelayMaxMs;
+  }
+  return value;
+}
+
+void refreshInterpolationDelayPresetHtml() {
+  const int fetch_ms = static_cast<int>(config::kAdsbFetchIntervalMs);
+  const int p0 = 0;
+  const int p1 = clampInterpolationDelayMs((fetch_ms * 25) / 100);
+  const int p2 = clampInterpolationDelayMs((fetch_ms * 45) / 100);
+  const int p3 = clampInterpolationDelayMs((fetch_ms * 65) / 100);
+
+  snprintf(
+      s_interpolation_preset_html, sizeof(s_interpolation_preset_html),
+      "<div style=\"margin-top:.35rem\">"
+      "<label for=\"interp_delay_preset\" style=\"font-size:.92em\">"
+      "Interpolation preset (from fetch interval %d ms)</label><br>"
+      "<select id=\"interp_delay_preset\" style=\"width:100%%;max-width:18rem\" "
+      "onchange=\"(function(v){var i=document.querySelector('[name=interp_delay_ms]');"
+      "if(i){i.value=v;}})(this.value)\">"
+      "<option value=\"%d\">Off (0%%, %d ms)</option>"
+      "<option value=\"%d\">Low (25%%, %d ms)</option>"
+      "<option value=\"%d\">Medium (45%%, %d ms)</option>"
+      "<option value=\"%d\">High (65%%, %d ms)</option>"
+      "</select></div>"
+      "<script>(function(){"
+      "var i=document.querySelector('[name=interp_delay_ms]');"
+      "var s=document.getElementById('interp_delay_preset');"
+      "if(!i||!s){return;}"
+      "var p=[%d,%d,%d,%d];"
+      "function nearest(v){"
+      "var best=p[0],d=Math.abs(v-p[0]);"
+      "for(var n=1;n<p.length;n++){var nd=Math.abs(v-p[n]);if(nd<d){d=nd;best=p[n];}}"
+      "return String(best);"
+      "}"
+      "var sync=function(){var v=parseInt(i.value||'0',10);if(!isNaN(v)){s.value=nearest(v);}};"
+      "sync();"
+      "i.addEventListener('input',sync);"
+      "})();</script>",
+      fetch_ms, p0, p0, p1, p1, p2, p2, p3, p3, p0, p1, p2, p3);
+}
+
 void refreshPortalParamDefaults() {
+  refreshInterpolationDelayPresetHtml();
   char lat_buf[kCoordParamLen + 1];
   char lon_buf[kCoordParamLen + 1];
   snprintf(lat_buf, sizeof(lat_buf), "%.6f", services::location::lat());
@@ -227,6 +288,11 @@ void refreshPortalParamDefaults() {
   snprintf(altitude_offset_buf, sizeof(altitude_offset_buf), "%.1f",
            altitude_offset);
   s_param_altitude_offset.setValue(altitude_offset_buf, kAltitudeOffsetParamLen);
+  char interpolation_delay_buf[kInterpolationDelayParamLen + 1];
+  snprintf(interpolation_delay_buf, sizeof(interpolation_delay_buf), "%d",
+           services::settings::interpolationDelayMs());
+  s_param_interpolation_delay.setValue(interpolation_delay_buf,
+                                       kInterpolationDelayParamLen);
   refreshCheckboxAttrs(s_clock24_checkbox_attrs,
                        sizeof(s_clock24_checkbox_attrs),
                        services::settings::use24HourClock());
@@ -249,6 +315,7 @@ void onPortalParamsSaved() {
       s_param_footer.getValue(), s_param_weather.getValue(),
       s_param_fahrenheit.getValue(), services::units::useImperialDistance(),
       s_param_altitude_offset.getValue(),
+      s_param_interpolation_delay.getValue(),
       s_param_clock24.getValue(),
       s_param_text_scale.getValue(),
       s_param_ota_password.getValue());
@@ -365,6 +432,7 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String weather = web.arg("show_weather");
   const String fahrenheit = web.arg("temp_f");
   const String altitude_offset = web.arg("alt_offset");
+  const String interpolation_delay_ms = web.arg("interp_delay_ms");
   const String clock24 = web.arg("clock_24");
   const String text_scale = web.arg("text_scale");
   const String ota_password = web.arg("ota_password");
@@ -377,7 +445,8 @@ void savePortalParamsFromRequest(WebServer& web) {
   ui::radar::saveRunwaysFromPortal(runways.c_str());
   services::settings::saveFromPortal(
       footer.c_str(), weather.c_str(), fahrenheit.c_str(),
-      services::units::useImperialDistance(), altitude_offset.c_str(), clock24.c_str(),
+      services::units::useImperialDistance(), altitude_offset.c_str(),
+      interpolation_delay_ms.c_str(), clock24.c_str(),
       text_scale.c_str(), ota_password.c_str());
   refreshPortalParamDefaults();
 }
@@ -434,6 +503,8 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_param_fahrenheit);
   wm.addParameter(&s_param_after_fahrenheit_break);
   wm.addParameter(&s_param_altitude_offset);
+  wm.addParameter(&s_param_interpolation_delay);
+  wm.addParameter(&s_param_interpolation_delay_presets);
   wm.addParameter(&s_param_altitude_offset_button);
   wm.addParameter(&s_param_clock24);
   wm.addParameter(&s_param_after_clock_break);

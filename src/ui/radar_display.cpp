@@ -13,6 +13,7 @@
 #include "services/adsb_client.h"
 #include "services/display_settings.h"
 #include "services/radar_location.h"
+#include "services/unit_policy.h"
 #include "services/weather_time.h"
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
@@ -247,6 +248,79 @@ void initPalette() {
 }
 
 constexpr float kKmPerDeg = 111.0f;
+constexpr float kDegToRad = 0.01745329252f;
+constexpr unsigned long kInterpolationMaxMs = 4000UL;
+
+unsigned long interpolationElapsedMs() {
+  const unsigned long base_ms = services::adsb::lastFetchUpdateMs();
+  if (base_ms == 0) {
+    return 0;
+  }
+  const unsigned long raw_elapsed_ms = millis() - base_ms;
+  const unsigned long delay_ms =
+      static_cast<unsigned long>(services::settings::interpolationDelayMs());
+  if (raw_elapsed_ms <= delay_ms) {
+    return 0;
+  }
+  unsigned long elapsed_ms = raw_elapsed_ms - delay_ms;
+  if (elapsed_ms > kInterpolationMaxMs) {
+    elapsed_ms = kInterpolationMaxMs;
+  }
+  return elapsed_ms;
+}
+
+void interpolatedLatLon(const services::adsb::Aircraft& plane,
+                        unsigned long elapsed_ms, float* lat, float* lon) {
+  if (lat == nullptr || lon == nullptr) {
+    return;
+  }
+
+  *lat = plane.lat;
+  *lon = plane.lon;
+  if (plane.gs_knots <= 0.0f) {
+    return;
+  }
+
+  const float elapsed_h = static_cast<float>(elapsed_ms) / 3600000.0f;
+  const float distance_km = plane.gs_knots * 1.852f * elapsed_h;
+  const float rad = plane.track_deg * kDegToRad;
+  const float dx_km = sinf(rad) * distance_km;
+  const float dy_km = cosf(rad) * distance_km;
+  *lat += dy_km / kKmPerDeg;
+  *lon += dx_km / kKmPerDeg;
+}
+
+void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
+                                unsigned long elapsed_ms, char* out,
+                                size_t out_len) {
+  if (out_len == 0) {
+    return;
+  }
+  out[0] = '\0';
+
+  if (plane.on_ground) {
+    strncpy(out, "GND", out_len - 1);
+    out[out_len - 1] = '\0';
+    return;
+  }
+  if (!plane.has_altitude) {
+    strncpy(out, plane.alt, out_len - 1);
+    out[out_len - 1] = '\0';
+    return;
+  }
+
+  float altitude_ft = plane.altitude_ft;
+  altitude_ft += plane.vertical_rate_fpm *
+                 (static_cast<float>(elapsed_ms) / 60000.0f);
+  altitude_ft += services::settings::altitudeOffsetFeet();
+
+  if (services::units::useImperialDistance()) {
+    snprintf(out, out_len, "%d ft", static_cast<int>(lroundf(altitude_ft)));
+    return;
+  }
+  snprintf(out, out_len, "%d m",
+           static_cast<int>(lroundf(altitude_ft * 0.3048f)));
+}
 
 void offsetKmFromCenter(float lat, float lon, float* dx_km, float* dy_km,
                         float* dist_km) {
@@ -366,14 +440,12 @@ int speedLineLengthPx(float gs_knots) {
 }
 
 void noseTip(int cx, int cy, float heading_deg, int* tip_x, int* tip_y) {
-  constexpr float kDegToRad = 0.01745329252f;
   const float rad = heading_deg * kDegToRad;
   *tip_x = cx + static_cast<int>(lroundf(sinf(rad) * radar::kAircraftNoseLenPx));
   *tip_y = cy - static_cast<int>(lroundf(cosf(rad) * radar::kAircraftNoseLenPx));
 }
 
 void drawHeadingTriangle(int cx, int cy, float heading_deg, uint16_t color) {
-  constexpr float kDegToRad = 0.01745329252f;
   const float rad = heading_deg * kDegToRad;
   const float sin_h = sinf(rad);
   const float cos_h = cosf(rad);
@@ -405,7 +477,6 @@ void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
   int tip_y = 0;
   noseTip(cx, cy, heading_deg, &tip_x, &tip_y);
 
-  constexpr float kDegToRad = 0.01745329252f;
   const float rad = track_deg * kDegToRad;
   int ex = tip_x + static_cast<int>(lroundf(sinf(rad) * len));
   int ey = tip_y - static_cast<int>(lroundf(cosf(rad) * len));
@@ -442,13 +513,14 @@ uint32_t hashTagCString(uint32_t hash, const char* text) {
   return hash;
 }
 
-uint32_t buildTagContentHash(const services::adsb::Aircraft& plane) {
+uint32_t buildTagContentHash(const services::adsb::Aircraft& plane,
+                             const char* altitude_text) {
   uint32_t hash = 2166136261u;
   const char* identity =
       plane.route[0] != '\0' ? plane.route : plane.callsign;
   hash = hashTagCString(hash, identity);
   hash = hashTagCString(hash, plane.type);
-  hash = hashTagCString(hash, plane.alt);
+  hash = hashTagCString(hash, altitude_text);
   return hash;
 }
 
@@ -467,9 +539,10 @@ void refreshTagWidthCacheStyle() {
   invalidateTagWidthCache();
 }
 
-int measureTagBlockWidth(size_t index, const services::adsb::Aircraft& plane) {
+int measureTagBlockWidth(size_t index, const services::adsb::Aircraft& plane,
+                         const char* altitude_text) {
   refreshTagWidthCacheStyle();
-  const uint32_t content_hash = buildTagContentHash(plane);
+  const uint32_t content_hash = buildTagContentHash(plane, altitude_text);
   if (index < services::adsb::kMaxAircraft &&
       s_cached_tag_block_valid[index] &&
       s_cached_tag_block_hash[index] == content_hash) {
@@ -491,8 +564,8 @@ int measureTagBlockWidth(size_t index, const services::adsb::Aircraft& plane) {
       max_w = w;
     }
   }
-  if (plane.alt[0] != '\0') {
-    const int w = s_draw->textWidth(plane.alt);
+  if (altitude_text != nullptr && altitude_text[0] != '\0') {
+    const int w = s_draw->textWidth(altitude_text);
     if (w > max_w) {
       max_w = w;
     }
@@ -508,12 +581,13 @@ int measureTagBlockWidth(size_t index, const services::adsb::Aircraft& plane) {
 }
 
 void drawAircraftTag(size_t index, int x, int y,
-                     const services::adsb::Aircraft& plane) {
+                     const services::adsb::Aircraft& plane,
+                     const char* altitude_text) {
   initTagLabelMetrics();
   applyTagStyle();
 
   const int line_h = s_draw->fontHeight();
-  const int block_w = measureTagBlockWidth(index, plane);
+  const int block_w = measureTagBlockWidth(index, plane, altitude_text);
   const int block_h = line_h * 3;
   int ly = y - block_h / 2;
 
@@ -547,9 +621,9 @@ void drawAircraftTag(size_t index, int x, int y,
   }
   ly += line_h;
 
-  if (plane.alt[0] != '\0') {
+  if (altitude_text != nullptr && altitude_text[0] != '\0') {
     s_draw->setTextColor(radar::kColorTagAltitude, radar::kColorBackground);
-    s_draw->drawString(plane.alt, anchor_x, ly);
+    s_draw->drawString(altitude_text, anchor_x, ly);
   }
 }
 
@@ -711,19 +785,27 @@ void drawAircraft() {
 
   AircraftDrawItem items[services::adsb::kMaxAircraft];
   BeyondDotDrawItem dots[services::adsb::kMaxAircraft];
+  char altitude_labels[services::adsb::kMaxAircraft][12] = {};
   size_t draw_count = 0;
   size_t dot_count = 0;
+  const unsigned long elapsed_ms = interpolationElapsedMs();
 
   for (size_t i = 0; i < n; ++i) {
+    float lat = 0.0f;
+    float lon = 0.0f;
+    interpolatedLatLon(planes[i], elapsed_ms, &lat, &lon);
+    formatInterpolatedAltitude(planes[i], elapsed_ms, altitude_labels[i],
+                               sizeof(altitude_labels[i]));
+
     float dx_km = 0.0f;
     float dy_km = 0.0f;
     float dist_km = 0.0f;
-    offsetKmFromCenter(planes[i].lat, planes[i].lon, &dx_km, &dy_km, &dist_km);
+    offsetKmFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
 
     if (isInsideOuterRingKm(dist_km)) {
       int x = 0;
       int y = 0;
-      latLonToScreen(planes[i].lat, planes[i].lon, &x, &y);
+      latLonToScreen(lat, lon, &x, &y);
       items[draw_count].index = i;
       items[draw_count].x = x;
       items[draw_count].y = y;
@@ -734,7 +816,7 @@ void drawAircraft() {
 
     int dot_x = 0;
     int dot_y = 0;
-    if (!beyondRingEdgeDotFromLatLon(planes[i].lat, planes[i].lon, &dot_x,
+    if (!beyondRingEdgeDotFromLatLon(lat, lon, &dot_x,
                                      &dot_y)) {
       continue;
     }
@@ -760,7 +842,7 @@ void drawAircraft() {
   }
   for (size_t d = 0; d < draw_count; ++d) {
     const size_t i = items[d].index;
-    drawAircraftTag(i, items[d].x, items[d].y, planes[i]);
+    drawAircraftTag(i, items[d].x, items[d].y, planes[i], altitude_labels[i]);
   }
 }
 

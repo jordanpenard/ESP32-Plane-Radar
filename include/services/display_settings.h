@@ -8,6 +8,9 @@ constexpr size_t kOtaPasswordMaxLen = 32;
 constexpr int kTextScaleMinPercent = 80;
 constexpr int kTextScaleMaxPercent = 130;
 constexpr int kTextScaleDefaultPercent = 110;
+constexpr int kInterpolationDelayMinMs = 0;
+constexpr int kInterpolationDelayMaxMs = 5000;
+constexpr int kInterpolationDelayDefaultMs = 0;
 
 /** Load persistent display and OTA settings from NVS. */
 void init();
@@ -18,6 +21,7 @@ bool temperatureFahrenheit();
 bool altitudeMeters();
 float altitudeOffsetFeet();
 void setAltitudeOffsetFeet(float feet);
+int interpolationDelayMs();
 bool use24HourClock();
 int textScalePercent();
 const char* otaPassword();
@@ -30,6 +34,7 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* fahrenheit_checkbox,
                     bool use_miles,
                     const char* altitude_offset_value,
+                    const char* interpolation_delay_ms_value,
                     const char* clock24_checkbox,
                     const char* text_scale_percent_value,
                     const char* ota_password_value);

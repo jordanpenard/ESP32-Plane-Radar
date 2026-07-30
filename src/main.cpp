@@ -23,6 +23,9 @@ bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
 unsigned long g_last_adsb_fetch_ms = 0;
+unsigned long g_last_radar_render_ms = 0;
+
+constexpr unsigned long kRadarRenderIntervalMs = 40UL;  // ~25 FPS target
 
 void showRadarIfConnected() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -31,6 +34,7 @@ void showRadarIfConnected() {
   }
   services::weather::begin();
   ui::radarDisplayDraw();
+  g_last_radar_render_ms = millis();
   g_radar_visible = true;
 }
 
@@ -55,13 +59,18 @@ void handleBootButton() {
 
 void fetchAndDrawAircraft() {
   const float fetch_km = ui::radar::fetchRadiusKm();
-  if (!services::adsb::fetchUpdate(services::location::lat(),
-                                   services::location::lon(), fetch_km)) {
-    handleBootButton();
+  services::adsb::fetchUpdate(services::location::lat(),
+                              services::location::lon(), fetch_km);
+  handleBootButton();
+}
+
+void renderRadarIfDue() {
+  const unsigned long now = millis();
+  if (now - g_last_radar_render_ms < kRadarRenderIntervalMs) {
     return;
   }
+  g_last_radar_render_ms = now;
   ui::radarDisplayRefreshAircraft();
-  handleBootButton();
 }
 
 }  // namespace
@@ -120,14 +129,15 @@ void loop() {
     g_wifi_down_since = 0;
     if (!g_radar_visible) {
       showRadarIfConnected();
-    } else if (millis() - g_last_adsb_fetch_ms >= config::kAdsbFetchIntervalMs) {
-      g_last_adsb_fetch_ms = millis();
-      fetchAndDrawAircraft();
-    } else if (services::weather::refreshIfDue(
-                   services::location::lat(), services::location::lon())) {
-      ui::radarDisplayRefreshAircraft();
-    } else if (services::adsb::enrichOnePending()) {
-      ui::radarDisplayRefreshAircraft();
+    } else {
+      if (millis() - g_last_adsb_fetch_ms >= config::kAdsbFetchIntervalMs) {
+        g_last_adsb_fetch_ms = millis();
+        fetchAndDrawAircraft();
+      }
+      services::weather::refreshIfDue(services::location::lat(),
+                                      services::location::lon());
+      services::adsb::enrichOnePending();
+      renderRadarIfDue();
     }
   }
 

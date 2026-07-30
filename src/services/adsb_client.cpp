@@ -28,6 +28,7 @@ constexpr size_t kEnrichmentCacheSize = 48;
 Aircraft s_aircraft[kMaxAircraft];
 size_t s_aircraft_count = 0;
 PollFn s_poll_fn = nullptr;
+unsigned long s_last_fetch_update_ms = 0;
 unsigned long s_last_enrichment_lookup_ms = 0;
 unsigned long s_last_enrichment_failure_ms = 0;
 double s_last_center_lat = 0.0;
@@ -166,6 +167,17 @@ float pickGroundSpeed(const JsonObject& plane) {
   return 0.0f;
 }
 
+float pickVerticalRateFpm(const JsonObject& plane) {
+  float v = 0.0f;
+  if (readJsonFloat(plane, "baro_rate", &v)) {
+    return v;
+  }
+  if (readJsonFloat(plane, "geom_rate", &v)) {
+    return v;
+  }
+  return 0.0f;
+}
+
 bool isOnGround(const JsonObject& plane) {
   if (!plane["alt_baro"].is<const char*>()) {
     return false;
@@ -220,6 +232,20 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
 }
 
 void fillTagFields(Aircraft* ac, const JsonObject& plane) {
+  ac->on_ground = isOnGround(plane);
+  ac->has_altitude = false;
+  ac->altitude_ft = 0.0f;
+  ac->vertical_rate_fpm = pickVerticalRateFpm(plane);
+
+  if (!ac->on_ground) {
+    float alt = 0.0f;
+    if (readJsonFloat(plane, "alt_baro", &alt) ||
+        readJsonFloat(plane, "alt_geom", &alt)) {
+      ac->altitude_ft = alt;
+      ac->has_altitude = true;
+    }
+  }
+
   copyJsonStringTrimmed(plane, "hex", ac->hex, sizeof(ac->hex));
   copyJsonStringTrimmed(plane, "flight", ac->callsign, sizeof(ac->callsign));
   if (ac->callsign[0] == '\0') {
@@ -538,6 +564,8 @@ size_t aircraftCount() { return s_aircraft_count; }
 
 const Aircraft* aircraftList() { return s_aircraft; }
 
+unsigned long lastFetchUpdateMs() { return s_last_fetch_update_ms; }
+
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   s_last_center_lat = center_lat;
   s_last_center_lon = center_lon;
@@ -585,6 +613,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   JsonArray ac = doc["ac"].as<JsonArray>();
   if (ac.isNull()) {
     s_aircraft_count = 0;
+    s_last_fetch_update_ms = millis();
     return true;
   }
 
@@ -611,6 +640,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
 
   s_aircraft_count = n;
+  s_last_fetch_update_ms = millis();
   Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
   return true;
 }
