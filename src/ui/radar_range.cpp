@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace ui::radar {
@@ -76,6 +77,19 @@ void rangeInit() {
 void rangeNext() {
   s_range_index = static_cast<uint8_t>((s_range_index + 1) % kRangePresetCount);
   saveRangeIndex();
+}
+
+void saveRangeIndexFromPortal(const char* value) {
+  int idx = (value != nullptr) ? atoi(value) : -1;
+  if (idx < 0) {
+    idx = 0;
+  } else if (idx >= static_cast<int>(kRangePresetCount)) {
+    idx = static_cast<int>(kRangePresetCount) - 1;
+  }
+  s_range_index = static_cast<uint8_t>(idx);
+  saveRangeIndex();
+  Serial.printf("Radar range: ring3=%.0fkm outer=%.0fkm\n",
+               rangeCurrent().ring3_km, rangeCurrent().outer_km);
 }
 
 const RangePreset& rangeCurrent() { return kRangePresets[s_range_index]; }

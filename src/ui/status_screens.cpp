@@ -251,3 +251,51 @@ void statusScreenFirmwareUpdate() {
   drawTextBlock(config::kColorYellow, config::kTextOnYellow, lines,
                 sizeof(lines) / sizeof(lines[0]));
 }
+
+void statusScreenLanPortal(const char* ip, bool mdns_active,
+                          int countdown_seconds) {
+  const char* ip_text = (ip != nullptr && ip[0] != '\0') ? ip : "(no IP)";
+  if (!mdns_active) {
+    // mDNS isn't actually up (boot auto-portal window, or not yet bound
+    // on a manual toggle) — advertising kPortalHostUrl here would send
+    // the user to a dead address, and a failed DNS lookup never even
+    // reaches the device, so it wouldn't register as activity either.
+    if (countdown_seconds >= 0) {
+      char countdown_buf[24];
+      snprintf(countdown_buf, sizeof(countdown_buf), "Auto-off in %ds",
+               countdown_seconds);
+      const TextLine lines[] = {
+          {"LAN config ON", 1.15f, &kPortalGfxTitle},
+          {"Open in browser:", 1.0f, &kPortalGfxBody},
+          {ip_text, 1.1f, &kPortalGfxEmphasis},
+          {"Aircraft radar paused", 0.95f, &kConnectingGfxDetail},
+          {countdown_buf, 0.95f, &kConnectingGfxDetail},
+          {"Hold BOOT ~1s to turn off", 0.95f, &kConnectingGfxDetail},
+      };
+      drawTextBlock(config::kColorYellow, config::kTextOnYellow, lines,
+                    sizeof(lines) / sizeof(lines[0]));
+      return;
+    }
+    const TextLine lines[] = {
+        {"LAN config ON", 1.15f, &kPortalGfxTitle},
+        {"Open in browser:", 1.0f, &kPortalGfxBody},
+        {ip_text, 1.1f, &kPortalGfxEmphasis},
+        {"Aircraft radar paused", 0.95f, &kConnectingGfxDetail},
+        {"Hold BOOT ~1s to turn off", 0.95f, &kConnectingGfxDetail},
+    };
+    drawTextBlock(config::kColorYellow, config::kTextOnYellow, lines,
+                  sizeof(lines) / sizeof(lines[0]));
+    return;
+  }
+  const TextLine lines[] = {
+      {"LAN config ON", 1.15f, &kPortalGfxTitle},
+      {"Open in browser:", 1.0f, &kPortalGfxBody},
+      {config::kPortalHostUrl, 1.1f, &kPortalGfxEmphasis},
+      {"or", 0.95f, &kConnectingGfxDetail},
+      {ip_text, 1.1f, &kPortalGfxEmphasis},
+      {"Aircraft radar paused", 0.95f, &kConnectingGfxDetail},
+      {"Hold BOOT ~1s to turn off", 0.95f, &kConnectingGfxDetail},
+  };
+  drawTextBlock(config::kColorYellow, config::kTextOnYellow, lines,
+                sizeof(lines) / sizeof(lines[0]));
+}

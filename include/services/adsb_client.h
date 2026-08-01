@@ -45,6 +45,16 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km);
 unsigned long lastFetchUpdateMs();
 
 /**
+ * Closes any kept-alive HTTPS connections (ADS-B fetch and flight-data
+ * lookup) that are currently reused between polls, freeing back the large
+ * contiguous heap block(s) they hold onto. Other subsystems that need an
+ * occasional big TLS handshake of their own (e.g. the weather fetch, which
+ * only runs every ~15 minutes) should call this first to get a fair shot at
+ * that memory; ADS-B will transparently reconnect on its next poll cycle.
+ */
+void releasePersistentConnection();
+
+/**
  * Look up one uncached aircraft through ADSBDB. Results are rate-limited and
  * cached. Returns true when a visible route or type changed.
  */

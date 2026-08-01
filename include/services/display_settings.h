@@ -24,6 +24,7 @@ void setAltitudeOffsetFeet(float feet);
 bool altitudeFilterEnabled();
 bool altitudeFilterHideUnder();
 float altitudeFilterThresholdFeet();
+bool adsbInterpolationEnabled();
 int interpolationDelayMs();
 bool clockFollowsInterpolationDelay();
 bool use24HourClock();
@@ -42,6 +43,7 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* altitude_filter_enabled_checkbox,
                     const char* altitude_filter_under_checkbox,
                     const char* altitude_filter_value,
+                    const char* adsb_interpolation_checkbox,
                     const char* interpolation_delay_ms_value,
                     const char* clock24_checkbox,
                     const char* time_seconds_checkbox,

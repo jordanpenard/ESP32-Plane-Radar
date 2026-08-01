@@ -11,14 +11,26 @@
 #include <ctime>
 #include <sys/time.h>
 
+#include <esp_heap_caps.h>
+
 #include "config.h"
+#include "services/adsb_client.h"
 #include "services/display_settings.h"
+#include "services/wifi_setup.h"
 
 namespace services::weather {
 namespace {
 
 constexpr time_t kMinimumValidEpoch = 1609459200;  // 2021-01-01 UTC
-constexpr uint32_t kMinHeapForSslBytes = 52000;
+// Boot-time diagnostics show the largest contiguous free block this
+// hardware/firmware combo ever actually achieves tops out around ~34.8KB
+// (matches what adsb_client.cpp's own gate already assumes, see
+// kMinLargestBlockForAdsbSslBytes=34500) — even with zero contention from
+// any other connection. The old 36000 threshold here was never reachable,
+// so weather always fell back to "WX N/A". Aligned to the same
+// proven-working ceiling ADS-B already relies on, with a small margin.
+constexpr uint32_t kMinHeapForSslBytes = 48000;
+constexpr size_t kMinLargestBlockForSslBytes = 34000;
 
 bool s_started = false;
 bool s_valid = false;
@@ -55,10 +67,20 @@ bool prepareSecureClient(WiFiClientSecure* client, const char* tag) {
     return false;
   }
   const uint32_t free_heap = ESP.getFreeHeap();
-  if (free_heap < kMinHeapForSslBytes) {
+  const size_t largest_block =
+      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  Serial.printf(
+      "%s: TLS gate heap=%lu(need %lu) largest=%u(need %u)\n", tag,
+      static_cast<unsigned long>(free_heap),
+      static_cast<unsigned long>(kMinHeapForSslBytes),
+      static_cast<unsigned>(largest_block),
+      static_cast<unsigned>(kMinLargestBlockForSslBytes));
+  if (free_heap < kMinHeapForSslBytes ||
+      largest_block < kMinLargestBlockForSslBytes) {
     setLastError("low heap");
-    Serial.printf("%s: skip TLS, low heap=%lu\n", tag,
-                  static_cast<unsigned long>(free_heap));
+    Serial.printf("%s: skip TLS, low/fragmented heap=%lu, largest=%u\n", tag,
+                  static_cast<unsigned long>(free_heap),
+                  static_cast<unsigned>(largest_block));
     return false;
   }
   client->setInsecure();
@@ -164,17 +186,19 @@ void seedClockFromApiTime(const char* local_iso_time, int32_t utc_offset) {
   settimeofday(&value, nullptr);
 }
 
-bool fetch(double latitude, double longitude) {
-  String url = config::kWeatherApiBase;
-  url += "?latitude=";
-  url += String(latitude, 6);
-  url += "&longitude=";
-  url += String(longitude, 6);
-  url +=
-      "&current=temperature_2m,relative_humidity_2m,weather_code,is_day"
-      "&temperature_unit=celsius&timezone=auto&forecast_days=1";
-
+bool fetchOnce(const String& url, int attempt, int max_attempts) {
   WiFiClientSecure client;
+  // ADS-B keeps its own HTTPS connection alive between polls (to avoid
+  // repeated TLS handshakes), which otherwise permanently reserves the one
+  // large contiguous heap block this infrequent (every ~15 min) fetch also
+  // needs. Release it first so the two never starve each other; ADS-B just
+  // reconnects on its next normal poll cycle.
+  services::adsb::releasePersistentConnection();
+  // WiFiManager's always-on LAN config web portal (HTTP server + mDNS) is
+  // the dominant permanent consumer of the largest contiguous heap block --
+  // far bigger than anything ADS-B holds. wifiLoop() restarts it on its very
+  // next call, so pausing it here just for this attempt is nearly free.
+  wifiPauseLanPortal();
   if (!prepareSecureClient(&client, "weather")) {
     s_last_http_status = 0;
     return false;
@@ -196,8 +220,10 @@ bool fetch(double latitude, double longitude) {
   if (code != HTTP_CODE_OK) {
     s_last_http_status = code;
     setLastError("http error");
-    Serial.printf("weather: HTTP %d\n", code);
+    Serial.printf("weather: HTTP %d (attempt %d/%d)\n", code, attempt,
+                  max_attempts);
     http.end();
+    client.stop();
     return false;
   }
   s_last_http_status = code;
@@ -236,6 +262,45 @@ bool fetch(double latitude, double longitude) {
                 s_humidity_percent, s_weather_code,
                 static_cast<long>(s_utc_offset_seconds));
   return true;
+}
+
+bool fetch(double latitude, double longitude) {
+  String url = config::kWeatherApiBase;
+  url += "?latitude=";
+  url += String(latitude, 6);
+  url += "&longitude=";
+  url += String(longitude, 6);
+  url +=
+      "&current=temperature_2m,relative_humidity_2m,weather_code,is_day"
+      "&temperature_unit=celsius&timezone=auto&forecast_days=1";
+
+  // A single attempt can lose a marginal TLS handshake race: mbedTLS's
+  // transient allocation needs during a handshake can fail even when the
+  // heap gate (a snapshot of the largest free block) passed a moment
+  // earlier -- confirmed on real hardware, where ADS-B's own low-largest
+  // probe succeeds only intermittently at the exact same reading that just
+  // failed here. This isn't something a fixed threshold can fully predict,
+  // so retry several times, spread over a longer window (mirroring how
+  // adsb_client.cpp's own probe/retry loop needs ~15-30s to land a good
+  // moment) rather than a tight, fast burst -- weather only runs once every
+  // kWeatherFetchIntervalMs, so the extra latency here is free.
+  constexpr int kMaxAttempts = 6;
+  constexpr unsigned long kRetryDelayMs = 3000UL;
+  constexpr unsigned long kRetryPollSliceMs = 100UL;
+  for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+    Serial.printf("weather: fetch attempt %d/%d\n", attempt, kMaxAttempts);
+    if (fetchOnce(url, attempt, kMaxAttempts)) {
+      return true;
+    }
+    if (attempt < kMaxAttempts) {
+      for (unsigned long waited = 0; waited < kRetryDelayMs;
+           waited += kRetryPollSliceMs) {
+        pollNetwork();
+        delay(kRetryPollSliceMs);
+      }
+    }
+  }
+  return false;
 }
 
 }  // namespace

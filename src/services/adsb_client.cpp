@@ -10,6 +10,8 @@
 #include <cfloat>
 #include <cstring>
 
+#include <esp_heap_caps.h>
+
 #include "config.h"
 #include "services/display_settings.h"
 #include "services/unit_policy.h"
@@ -25,20 +27,270 @@ constexpr float kMetersPerFoot = 0.3048f;
 constexpr int kConnectAttemptMs = 200;
 constexpr unsigned long kAdsbRequestTimeoutMs = 10000;
 constexpr size_t kEnrichmentCacheSize = 48;
-constexpr uint32_t kMinHeapForSslBytes = 52000;
+constexpr uint32_t kMinHeapForSslBytes = 54500;
+constexpr uint32_t kMinHeapForLookupSslBytes = 62000;
+constexpr size_t kMinLargestBlockForAdsbSslBytes = 34500;
+constexpr size_t kMinLargestBlockForLookupSslBytes = 40000;
+constexpr unsigned long kAdsbLowLargestProbeIntervalMs = 15000UL;
+constexpr unsigned long kAdsbLowHeapProbeIntervalMs = 12000UL;
+constexpr uint32_t kAdsbLowHeapProbeMarginBytes = 1800;
+constexpr uint32_t kMinHeapForLookupWorkBytes = 62000;
+constexpr size_t kMinLargestBlockForLookupWorkBytes = 40000;
+constexpr unsigned long kTlsSkipLogIntervalMs = 10000UL;
+constexpr unsigned long kAdsbTlsLowHeapBackoffMs = 5000UL;
+constexpr unsigned long kAdsbTlsFailureBackoffBaseMs = 15000UL;
+constexpr unsigned long kAdsbTlsFailureBackoffMaxMs = 60000UL;
+constexpr unsigned long kAdsbDiagIntervalMs = 30000UL;
+// Sanity cap on HTTP response bodies. A legitimate ADS-B/lookup JSON
+// response never gets close to this size; a Content-Length far beyond it
+// almost always means the HTTP framing got desynchronized (e.g. stale bytes
+// left over from a reused-but-not-fully-drained connection), not a real
+// payload. Treat anything past this as corrupt and refuse to trust it.
+constexpr size_t kMaxResponseBodyBytes = 98304;
 
-bool prepareSecureClient(WiFiClientSecure* client, const char* tag) {
+unsigned long s_last_tls_skip_log_ms = 0;
+unsigned long s_last_adsb_diag_log_ms = 0;
+uint32_t s_adsb_tls_skip_count = 0;
+uint32_t s_lookup_tls_skip_count = 0;
+uint32_t s_adsb_skip_low_heap_only_count = 0;
+uint32_t s_adsb_skip_low_largest_only_count = 0;
+uint32_t s_adsb_skip_low_both_count = 0;
+uint32_t s_lookup_skip_low_heap_only_count = 0;
+uint32_t s_lookup_skip_low_largest_only_count = 0;
+uint32_t s_lookup_skip_low_both_count = 0;
+uint32_t s_lookup_connect_fail_count = 0;
+uint32_t s_adsb_connect_fail_count = 0;
+uint8_t s_adsb_connect_fail_streak = 0;
+unsigned long s_adsb_tls_cooldown_until_ms = 0;
+unsigned long s_last_adsb_low_largest_probe_ms = 0;
+unsigned long s_last_adsb_low_heap_probe_ms = 0;
+uint32_t s_adsb_low_largest_probe_count = 0;
+uint32_t s_adsb_low_largest_probe_success_count = 0;
+uint32_t s_adsb_low_heap_probe_count = 0;
+uint32_t s_adsb_low_heap_probe_success_count = 0;
+
+// Tracks whether the current "adsb" TLS attempt was gated through one of
+// the opportunistic probes below, so success can be attributed correctly
+// (previously this was inferred from an unrelated post-fetch memory
+// snapshot, which did not actually reflect whether the probed attempt
+// succeeded).
+bool s_adsb_probe_active_largest = false;
+bool s_adsb_probe_active_heap = false;
+
+// Visibility into whether the persistent-connection keep-alive is actually
+// avoiding new TLS handshakes (each of which needs a large contiguous heap
+// block and is the main source of the observed fragmentation ratchet).
+uint32_t s_adsb_tls_reuse_count = 0;
+uint32_t s_adsb_tls_handshake_count = 0;
+
+bool s_diag_window_has_sample = false;
+uint32_t s_diag_window_min_heap = 0;
+uint32_t s_diag_window_max_heap = 0;
+size_t s_diag_window_min_largest = 0;
+size_t s_diag_window_max_largest = 0;
+uint32_t s_diag_window_min_internal_heap = 0;
+uint32_t s_diag_window_max_internal_heap = 0;
+size_t s_diag_window_min_internal_largest = 0;
+size_t s_diag_window_max_internal_largest = 0;
+
+void sampleDiagWindow(uint32_t free_heap, size_t largest_block) {
+  const uint32_t internal_heap =
+    heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const size_t internal_largest =
+    heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+  if (!s_diag_window_has_sample) {
+  s_diag_window_has_sample = true;
+  s_diag_window_min_heap = free_heap;
+  s_diag_window_max_heap = free_heap;
+  s_diag_window_min_largest = largest_block;
+  s_diag_window_max_largest = largest_block;
+  s_diag_window_min_internal_heap = internal_heap;
+  s_diag_window_max_internal_heap = internal_heap;
+  s_diag_window_min_internal_largest = internal_largest;
+  s_diag_window_max_internal_largest = internal_largest;
+  return;
+  }
+
+  s_diag_window_min_heap = std::min(s_diag_window_min_heap, free_heap);
+  s_diag_window_max_heap = std::max(s_diag_window_max_heap, free_heap);
+  s_diag_window_min_largest =
+    std::min(s_diag_window_min_largest, largest_block);
+  s_diag_window_max_largest =
+    std::max(s_diag_window_max_largest, largest_block);
+  s_diag_window_min_internal_heap =
+    std::min(s_diag_window_min_internal_heap, internal_heap);
+  s_diag_window_max_internal_heap =
+    std::max(s_diag_window_max_internal_heap, internal_heap);
+  s_diag_window_min_internal_largest =
+    std::min(s_diag_window_min_internal_largest, internal_largest);
+  s_diag_window_max_internal_largest =
+    std::max(s_diag_window_max_internal_largest, internal_largest);
+}
+
+void resetDiagWindow() { s_diag_window_has_sample = false; }
+
+bool prepareSecureClient(WiFiClientSecure* client, const char* tag,
+                         uint32_t min_heap_bytes,
+                         size_t min_largest_block) {
   if (client == nullptr) {
     return false;
   }
+  if (strcmp(tag, "adsb") == 0) {
+    s_adsb_probe_active_largest = false;
+    s_adsb_probe_active_heap = false;
+  }
+  if (client->connected()) {
+    // Reusing an already-established (kept-alive) TLS session: no new
+    // handshake means no new large contiguous allocation, so the
+    // fragmentation-aware admission check below does not apply.
+    if (strcmp(tag, "adsb") == 0) {
+      ++s_adsb_tls_reuse_count;
+    }
+    return true;
+  }
+  const unsigned long now = millis();
   const uint32_t free_heap = ESP.getFreeHeap();
-  if (free_heap < kMinHeapForSslBytes) {
-    Serial.printf("%s: skip TLS, low heap=%lu\n", tag,
-                  static_cast<unsigned long>(free_heap));
-    return false;
+  const size_t largest_block =
+      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  sampleDiagWindow(free_heap, largest_block);
+
+  const bool low_heap = free_heap < min_heap_bytes;
+  const bool low_largest = largest_block < min_largest_block;
+
+  bool allow_adsb_probe = false;
+  if (strcmp(tag, "adsb") == 0 && !low_heap && low_largest) {
+    const unsigned long elapsed = now - s_last_adsb_low_largest_probe_ms;
+    if (s_last_adsb_low_largest_probe_ms == 0 ||
+        elapsed >= kAdsbLowLargestProbeIntervalMs) {
+      allow_adsb_probe = true;
+      s_adsb_probe_active_largest = true;
+      s_last_adsb_low_largest_probe_ms = now;
+      ++s_adsb_low_largest_probe_count;
+      Serial.printf("adsb: low-largest probe heap=%lu largest=%u\n",
+                    static_cast<unsigned long>(free_heap),
+                    static_cast<unsigned>(largest_block));
+    }
+  }
+  if (strcmp(tag, "adsb") == 0 && low_heap && !low_largest &&
+      free_heap + kAdsbLowHeapProbeMarginBytes >= min_heap_bytes) {
+    const unsigned long elapsed = now - s_last_adsb_low_heap_probe_ms;
+    if (s_last_adsb_low_heap_probe_ms == 0 ||
+        elapsed >= kAdsbLowHeapProbeIntervalMs) {
+      allow_adsb_probe = true;
+      s_adsb_probe_active_heap = true;
+      s_last_adsb_low_heap_probe_ms = now;
+      ++s_adsb_low_heap_probe_count;
+      Serial.printf("adsb: low-heap probe heap=%lu largest=%u\n",
+                    static_cast<unsigned long>(free_heap),
+                    static_cast<unsigned>(largest_block));
+    }
+  }
+
+  if (low_heap || low_largest) {
+    if (!allow_adsb_probe) {
+      if (strcmp(tag, "adsb") == 0) {
+        ++s_adsb_tls_skip_count;
+        if (low_heap && low_largest) {
+          ++s_adsb_skip_low_both_count;
+        } else if (low_heap) {
+          ++s_adsb_skip_low_heap_only_count;
+        } else {
+          ++s_adsb_skip_low_largest_only_count;
+        }
+      } else if (strcmp(tag, "flight data") == 0) {
+        ++s_lookup_tls_skip_count;
+        if (low_heap && low_largest) {
+          ++s_lookup_skip_low_both_count;
+        } else if (low_heap) {
+          ++s_lookup_skip_low_heap_only_count;
+        } else {
+          ++s_lookup_skip_low_largest_only_count;
+        }
+      }
+
+      if (s_last_tls_skip_log_ms == 0 ||
+          now - s_last_tls_skip_log_ms >= kTlsSkipLogIntervalMs) {
+        Serial.printf("%s: skip TLS, low/fragmented heap=%lu, largest=%u\n", tag,
+                      static_cast<unsigned long>(free_heap),
+                      static_cast<unsigned>(largest_block));
+        s_last_tls_skip_log_ms = now;
+      }
+      return false;
+    }
+  }
+  if (strcmp(tag, "adsb") == 0) {
+    ++s_adsb_tls_handshake_count;
   }
   client->setInsecure();
   return true;
+}
+
+void maybeLogAdsbDiagnostics() {
+  const unsigned long now = millis();
+  if (s_last_adsb_diag_log_ms != 0 &&
+      now - s_last_adsb_diag_log_ms < kAdsbDiagIntervalMs) {
+    return;
+  }
+  s_last_adsb_diag_log_ms = now;
+
+  const uint32_t free_heap = ESP.getFreeHeap();
+  const size_t largest_block =
+      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  const uint32_t internal_heap =
+      heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const size_t internal_largest =
+      heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  sampleDiagWindow(free_heap, largest_block);
+
+  unsigned long cooldown_remaining_ms = 0;
+  if (s_adsb_tls_cooldown_until_ms > now) {
+    cooldown_remaining_ms = s_adsb_tls_cooldown_until_ms - now;
+  }
+
+  Serial.printf(
+      "adsb diag: heap=%lu largest=%u iheap=%lu ilargest=%u "
+      "win{heap=%lu..%lu largest=%u..%u iheap=%lu..%lu ilargest=%u..%u} "
+      "thr{adsb_heap=%lu adsb_largest=%u lookup_heap=%lu lookup_largest=%u} "
+      "probe{largest=%lu/%lu heap=%lu/%lu} "
+      "tls_skip{adsb=%lu[h=%lu l=%lu b=%lu],lookup=%lu[h=%lu l=%lu b=%lu]} "
+      "conn_fail{adsb=%lu,lookup=%lu} cool_ms=%lu streak=%u "
+      "tls_conn{reuse=%lu,new=%lu}\n",
+      static_cast<unsigned long>(free_heap),
+      static_cast<unsigned>(largest_block),
+      static_cast<unsigned long>(internal_heap),
+      static_cast<unsigned>(internal_largest),
+      static_cast<unsigned long>(s_diag_window_min_heap),
+      static_cast<unsigned long>(s_diag_window_max_heap),
+      static_cast<unsigned>(s_diag_window_min_largest),
+      static_cast<unsigned>(s_diag_window_max_largest),
+      static_cast<unsigned long>(s_diag_window_min_internal_heap),
+      static_cast<unsigned long>(s_diag_window_max_internal_heap),
+      static_cast<unsigned>(s_diag_window_min_internal_largest),
+      static_cast<unsigned>(s_diag_window_max_internal_largest),
+      static_cast<unsigned long>(kMinHeapForSslBytes),
+      static_cast<unsigned>(kMinLargestBlockForAdsbSslBytes),
+      static_cast<unsigned long>(kMinHeapForLookupSslBytes),
+      static_cast<unsigned>(kMinLargestBlockForLookupSslBytes),
+      static_cast<unsigned long>(s_adsb_low_largest_probe_count),
+      static_cast<unsigned long>(s_adsb_low_largest_probe_success_count),
+      static_cast<unsigned long>(s_adsb_low_heap_probe_count),
+      static_cast<unsigned long>(s_adsb_low_heap_probe_success_count),
+      static_cast<unsigned long>(s_adsb_tls_skip_count),
+      static_cast<unsigned long>(s_adsb_skip_low_heap_only_count),
+      static_cast<unsigned long>(s_adsb_skip_low_largest_only_count),
+      static_cast<unsigned long>(s_adsb_skip_low_both_count),
+      static_cast<unsigned long>(s_lookup_tls_skip_count),
+      static_cast<unsigned long>(s_lookup_skip_low_heap_only_count),
+      static_cast<unsigned long>(s_lookup_skip_low_largest_only_count),
+      static_cast<unsigned long>(s_lookup_skip_low_both_count),
+      static_cast<unsigned long>(s_adsb_connect_fail_count),
+      static_cast<unsigned long>(s_lookup_connect_fail_count),
+      cooldown_remaining_ms, static_cast<unsigned>(s_adsb_connect_fail_streak),
+      static_cast<unsigned long>(s_adsb_tls_reuse_count),
+      static_cast<unsigned long>(s_adsb_tls_handshake_count));
+
+  resetDiagWindow();
 }
 
 Aircraft s_aircraft[kMaxAircraft];
@@ -46,6 +298,7 @@ Aircraft s_previous_aircraft[kMaxAircraft];
 size_t s_aircraft_count = 0;
 PollFn s_poll_fn = nullptr;
 unsigned long s_last_fetch_update_ms = 0;
+unsigned long s_last_adsb_tls_skip_ms = 0;
 unsigned long s_last_enrichment_lookup_ms = 0;
 unsigned long s_last_enrichment_failure_ms = 0;
 double s_last_center_lat = 0.0;
@@ -62,23 +315,53 @@ struct EnrichmentCacheEntry {
 
 EnrichmentCacheEntry s_enrichment_cache[kEnrichmentCacheSize];
 
+// Persistent TLS clients, reused across fetch cycles instead of being
+// constructed/destroyed on every call. WiFiClientSecure's destructor tears
+// down the mbedTLS context (and its ~16-34KB RX/TX buffers), so recreating
+// it every 3s was the actual root cause of the heap fragmentation ratchet:
+// each cycle freed and re-allocated a large contiguous block, and the
+// allocator could not always reclaim the exact same region. Keeping the
+// client (and the HTTPClient that owns it) alive lets HTTP keep-alive avoid
+// a brand-new TLS handshake most of the time, so the big buffers stay put.
+WiFiClientSecure s_adsb_client;
+HTTPClient s_adsb_http;
+WiFiClientSecure s_lookup_client;
+HTTPClient s_lookup_http;
+
 void pollNetwork() {
   if (s_poll_fn != nullptr) {
     s_poll_fn();
   }
 }
 
-int performGetWithPoll(HTTPClient& http, unsigned long timeout_ms) {
+int performGetWithPoll(HTTPClient& http, unsigned long timeout_ms,
+                       int max_attempts) {
   http.setConnectTimeout(kConnectAttemptMs);
   const unsigned long started_ms = millis();
+  int attempts = 0;
   while (millis() - started_ms < timeout_ms) {
+    ++attempts;
     pollNetwork();
     const int code = http.GET();
     if (code > 0) {
       return code;
     }
+    // Any GET() failure (timeout, connection lost, refused, etc.) leaves the
+    // underlying TCP/TLS session in a state that must not be trusted for
+    // reuse on the next cycle -- force a hard close now. Since the client is
+    // now a persistent, kept-alive object (not recreated every cycle),
+    // leaving a half-open/broken socket here would otherwise make the next
+    // fetch silently try to "reuse" a dead connection, or leave it stuck
+    // fragmenting the heap indefinitely.
+    WiFiClient* stream = http.getStreamPtr();
+    if (stream != nullptr) {
+      stream->stop();
+    }
     if (code != HTTPC_ERROR_CONNECTION_REFUSED &&
         code != HTTPC_ERROR_NOT_CONNECTED) {
+      return code;
+    }
+    if (attempts >= max_attempts) {
       return code;
     }
     delay(5);
@@ -87,13 +370,19 @@ int performGetWithPoll(HTTPClient& http, unsigned long timeout_ms) {
 }
 
 bool readResponseBodyWithPoll(HTTPClient& http, String& payload,
-                              unsigned long timeout_ms) {
+                              unsigned long timeout_ms, bool* out_complete) {
+  *out_complete = false;
   WiFiClient* stream = http.getStreamPtr();
   if (stream == nullptr) {
     return false;
   }
 
   const int content_length = http.getSize();
+  if (content_length > static_cast<int>(kMaxResponseBodyBytes)) {
+    Serial.printf("http: implausible content-length %d, dropping\n",
+                  content_length);
+    return false;
+  }
   if (content_length > 0) {
     payload.reserve(static_cast<unsigned>(content_length + 1));
   }
@@ -111,16 +400,30 @@ bool readResponseBodyWithPoll(HTTPClient& http, String& payload,
       if (read_bytes > 0) {
         payload.concat(reinterpret_cast<const char*>(buffer),
                        static_cast<unsigned>(read_bytes));
+        if (payload.length() > kMaxResponseBodyBytes) {
+          Serial.println("http: response body exceeded sanity cap");
+          return false;
+        }
       }
     }
     if (content_length > 0 &&
         static_cast<int>(payload.length()) >= content_length) {
+      *out_complete = true;
       break;
     }
     if (!http.connected() && stream->available() <= 0) {
       break;
     }
     delay(1);
+  }
+
+  if (content_length <= 0) {
+    // Length wasn't known up front (missing header/chunked transfer): only
+    // ever consider it "complete" once the peer has actually closed, since
+    // there is no other way to know every byte arrived. On a kept-alive
+    // connection this correctly means "don't trust it, close and retry
+    // fresh" rather than risking a truncated/garbled payload.
+    *out_complete = payload.length() > 0 && !http.connected();
   }
 
   return payload.length() > 0;
@@ -512,22 +815,38 @@ String callsignRouteUrl(const Aircraft& plane) {
 bool fetchFlightDataJson(const String& url, const char* callsign,
                          JsonDocument* doc, bool* not_found) {
   *not_found = false;
-  WiFiClientSecure client;
-  if (!prepareSecureClient(&client, "flight data")) {
+  if (!prepareSecureClient(&s_lookup_client, "flight data",
+                           kMinHeapForLookupSslBytes,
+                           kMinLargestBlockForLookupSslBytes)) {
     return false;
   }
 
-  HTTPClient http;
-  if (!http.begin(client, url)) {
+  HTTPClient& http = s_lookup_http;
+  if (!http.begin(s_lookup_client, url)) {
     Serial.println("flight data: http.begin failed");
     return false;
   }
+  http.setReuse(true);
   http.setTimeout(config::kFlightLookupTimeoutMs);
-  const int code = performGetWithPoll(http, config::kFlightLookupTimeoutMs);
+  const int code =
+      performGetWithPoll(http, config::kFlightLookupTimeoutMs, 1);
+  if (code < 0) {
+    ++s_lookup_connect_fail_count;
+  }
 
   String payload;
+  bool body_complete = false;
   if (code == HTTP_CODE_OK) {
-    readResponseBodyWithPoll(http, payload, config::kFlightLookupTimeoutMs);
+    readResponseBodyWithPoll(http, payload, config::kFlightLookupTimeoutMs,
+                             &body_complete);
+    if (!body_complete) {
+      // Don't trust a truncated/ambiguous body, and don't let a corrupted
+      // mid-stream state bleed into the next reused request on this
+      // connection -- force a clean reconnect next time instead.
+      Serial.println("flight data: incomplete response, dropping connection");
+      s_lookup_client.stop();
+      payload = String();
+    }
   }
   http.end();
 
@@ -634,7 +953,42 @@ const Aircraft* aircraftList() { return s_aircraft; }
 
 unsigned long lastFetchUpdateMs() { return s_last_fetch_update_ms; }
 
+void releasePersistentConnection() {
+  // Both clients are kept alive/reused across polls to avoid repeated TLS
+  // handshakes (see fetchUpdate()/fetchFlightDataJson()). That's normally a
+  // win, but it also means each one permanently holds onto a large
+  // contiguous heap block for as long as it stays connected. Occasional,
+  // low-frequency consumers elsewhere (weather) can starve forever if ADS-B
+  // never lets go, so give them an explicit way to reclaim that memory.
+  const bool adsb_was_connected = s_adsb_client.connected();
+  const bool lookup_was_connected = s_lookup_client.connected();
+  const uint32_t heap_before = ESP.getFreeHeap();
+  const size_t largest_before =
+      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  s_adsb_client.stop();
+  s_lookup_client.stop();
+  Serial.printf(
+      "adsb: release requested (adsb_conn=%d,lookup_conn=%d) heap %lu->%lu "
+      "largest %u->%u\n",
+      adsb_was_connected, lookup_was_connected,
+      static_cast<unsigned long>(heap_before),
+      static_cast<unsigned long>(ESP.getFreeHeap()),
+      static_cast<unsigned>(largest_before),
+      static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+}
+
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
+  maybeLogAdsbDiagnostics();
+
+  const unsigned long now = millis();
+  if (s_adsb_tls_cooldown_until_ms != 0 && now < s_adsb_tls_cooldown_until_ms) {
+    return false;
+  }
+  if (s_last_adsb_tls_skip_ms != 0 &&
+      now - s_last_adsb_tls_skip_ms < kAdsbTlsLowHeapBackoffMs) {
+    return false;
+  }
+
   const size_t previous_count = s_aircraft_count;
   memcpy(s_previous_aircraft, s_aircraft, sizeof(s_aircraft));
 
@@ -649,35 +1003,94 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   url += "/dist/";
   url += String(dist_nm, 1);
 
-  WiFiClientSecure client;
-  if (!prepareSecureClient(&client, "adsb")) {
+  WiFiClientSecure& client = s_adsb_client;
+  if (!prepareSecureClient(&client, "adsb", kMinHeapForSslBytes,
+                           kMinLargestBlockForAdsbSslBytes)) {
+    s_last_adsb_tls_skip_ms = now;
+    s_adsb_tls_cooldown_until_ms = now + kAdsbTlsLowHeapBackoffMs;
     return false;
   }
+  s_last_adsb_tls_skip_ms = 0;
 
-  HTTPClient http;
+  HTTPClient& http = s_adsb_http;
   if (!http.begin(client, url)) {
     Serial.println("adsb: http.begin failed");
     return false;
   }
+  http.setReuse(true);
 
   http.setTimeout(kAdsbRequestTimeoutMs);
-  const int code = performGetWithPoll(http, kAdsbRequestTimeoutMs);
+  const int code = performGetWithPoll(http, kAdsbRequestTimeoutMs, 1);
+  if (code < 0) {
+    ++s_adsb_connect_fail_count;
+    const uint8_t capped_streak =
+        s_adsb_connect_fail_streak < 3 ? s_adsb_connect_fail_streak : 3;
+    const unsigned long backoff_ms = std::min(
+        kAdsbTlsFailureBackoffMaxMs,
+        kAdsbTlsFailureBackoffBaseMs << capped_streak);
+    s_adsb_tls_cooldown_until_ms = now + backoff_ms;
+    if (s_adsb_connect_fail_streak < 255) {
+      ++s_adsb_connect_fail_streak;
+    }
+  }
   if (code != HTTP_CODE_OK) {
     Serial.printf("adsb: HTTP %d\n", code);
     http.end();
     return false;
   }
+  if (s_adsb_probe_active_largest) {
+    ++s_adsb_low_largest_probe_success_count;
+    s_adsb_probe_active_largest = false;
+  }
+  if (s_adsb_probe_active_heap) {
+    ++s_adsb_low_heap_probe_success_count;
+    s_adsb_probe_active_heap = false;
+  }
+  s_adsb_connect_fail_streak = 0;
+  s_adsb_tls_cooldown_until_ms = 0;
 
   String payload;
-  if (!readResponseBodyWithPoll(http, payload, kAdsbRequestTimeoutMs)) {
-    Serial.println("adsb: empty response");
+  bool body_complete = false;
+  const bool got_body =
+      readResponseBodyWithPoll(http, payload, kAdsbRequestTimeoutMs,
+                               &body_complete);
+  if (!got_body || !body_complete) {
+    Serial.println(got_body ? "adsb: incomplete response, dropping connection"
+                            : "adsb: empty response");
+    // Force a hard close instead of trusting HTTPClient's keep-alive reuse:
+    // a truncated/ambiguous body means the connection's byte stream state
+    // can no longer be trusted for the next reused request.
+    client.stop();
     http.end();
     return false;
   }
   http.end();
 
+  // The adsb.fi response includes many fields per aircraft (rr_lat/rr_lon,
+  // nac_p/nac_v, sil, sda, mlat[], tisb[], messages, seen, rssi, dbFlags...)
+  // that this firmware never reads. Parsing them anyway roughly doubled the
+  // JsonDocument's memory footprint on wide-radius fetches (many aircraft),
+  // which combined with the raw payload buffer could exhaust/fragment the
+  // heap (`NoMemory`/`IncompleteInput` parse errors). A filter tells
+  // ArduinoJson to skip storing anything outside this shape entirely.
+  JsonDocument filter;
+  JsonObject filter_ac = filter["ac"][0].to<JsonObject>();
+  filter_ac["lat"] = true;
+  filter_ac["lon"] = true;
+  filter_ac["true_heading"] = true;
+  filter_ac["mag_heading"] = true;
+  filter_ac["track"] = true;
+  filter_ac["gs"] = true;
+  filter_ac["baro_rate"] = true;
+  filter_ac["geom_rate"] = true;
+  filter_ac["alt_baro"] = true;
+  filter_ac["alt_geom"] = true;
+  filter_ac["hex"] = true;
+  filter_ac["flight"] = true;
+
   JsonDocument doc;
-  const DeserializationError err = deserializeJson(doc, payload);
+  const DeserializationError err =
+      deserializeJson(doc, payload, DeserializationOption::Filter(filter));
   if (err) {
     Serial.printf("adsb: JSON parse error: %s\n", err.c_str());
     return false;
@@ -748,6 +1161,16 @@ bool enrichOnePending() {
       (s_last_enrichment_lookup_ms != 0 &&
        now - s_last_enrichment_lookup_ms <
            config::kFlightLookupMinIntervalMs)) {
+    return false;
+  }
+
+  // Keep core ADS-B updates responsive: skip non-critical enrichment when
+  // memory is below the same safety envelope used by lookup TLS.
+  const uint32_t free_heap = ESP.getFreeHeap();
+  const size_t largest_block =
+      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  if (free_heap < kMinHeapForLookupWorkBytes ||
+      largest_block < kMinLargestBlockForLookupWorkBytes) {
     return false;
   }
 

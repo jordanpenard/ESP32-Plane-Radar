@@ -176,13 +176,21 @@ void attachRoutes() {
 
 }  // namespace
 
-void configure(WiFiManager& manager, AdditionalRoutesFn additional_routes) {
+void configure(WiFiManager& manager, AdditionalRoutesFn additional_routes,
+               const char* extra_menu_html) {
   s_manager = &manager;
   s_additional_routes = additional_routes;
   manager.setShowInfoUpdate(false);
-  manager.setCustomMenuHTML(
+  // WiFiManager::setCustomMenuHTML() stores the raw pointer (does not copy
+  // the string), so the buffer must outlive this call — use a static.
+  static String s_menu_html;
+  s_menu_html =
       "<form action='/firmware' method='get'><button>Firmware update</button>"
-      "</form><br/>\n");
+      "</form><br/>\n";
+  if (extra_menu_html != nullptr) {
+    s_menu_html += extra_menu_html;
+  }
+  manager.setCustomMenuHTML(s_menu_html.c_str());
   const char* menu[] = {"wifi", "param", "info", "custom",
                         "sep",  "restart", "exit"};
   manager.setMenu(menu, sizeof(menu) / sizeof(menu[0]));

@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 
 #include "config.h"
 #include "hardware/display.h"
@@ -24,8 +25,11 @@ unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
 unsigned long g_last_adsb_fetch_ms = 0;
 unsigned long g_last_radar_render_ms = 0;
+long g_last_shown_portal_countdown = -2;  // sentinel: never a valid value
+unsigned long g_last_portal_countdown_draw_ms = 0;
 
 constexpr unsigned long kRadarRenderIntervalMs = 40UL;  // ~25 FPS target
+constexpr unsigned long kPortalCountdownPollMs = 500UL;
 
 void showRadarIfConnected() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -50,8 +54,52 @@ void onRangeTap() {
   }
 }
 
+void showLanPortalScreen() {
+  const String ip = WiFi.localIP().toString();
+  const long countdown = wifiBootAutoPortalSecondsLeft();
+  statusScreenLanPortal(ip.c_str(), wifiLanPortalMdnsActive(),
+                       static_cast<int>(countdown));
+  g_last_shown_portal_countdown = countdown;
+  g_last_portal_countdown_draw_ms = millis();
+}
+
+/** Call every loop() iteration while the portal is active: redraws the
+ * screen only when the countdown's displayed value actually changes (once
+ * a second), so it counts down live and disappears the moment activity is
+ * detected (wifiBootAutoPortalSecondsLeft() then returns -1). */
+void updatePortalCountdownIfDue() {
+  const unsigned long now = millis();
+  if (now - g_last_portal_countdown_draw_ms < kPortalCountdownPollMs) {
+    return;
+  }
+  if (wifiBootAutoPortalSecondsLeft() == g_last_shown_portal_countdown) {
+    return;
+  }
+  showLanPortalScreen();
+}
+
+void onLanPortalToggled() {
+  if (wifiLanPortalActive()) {
+    // Free the ADS-B/lookup TLS clients' memory immediately rather than
+    // waiting for their next natural teardown — the portal needs the
+    // large contiguous heap block, and aircraft monitoring is paused
+    // anyway while it's on.
+    services::adsb::releasePersistentConnection();
+    g_radar_visible = false;
+    showLanPortalScreen();
+  } else if (WiFi.status() == WL_CONNECTED) {
+    g_last_adsb_fetch_ms = 0;  // fetch fresh data right away on resume
+    showRadarIfConnected();
+  }
+}
+
 void handleBootButton() {
   bootButtonPollLongPress();
+  if (bootButtonConsumePortalToggle()) {
+    wifiToggleLanPortal();
+    onLanPortalToggled();
+    return;
+  }
   if (bootButtonConsumeTap()) {
     onRangeTap();
   }
@@ -89,6 +137,10 @@ void setup() {
   delay(500);
   Serial.println();
   Serial.println("Plane Radar");
+  Serial.printf("boot: free heap=%lu largest=%u\n",
+                static_cast<unsigned long>(ESP.getFreeHeap()),
+                static_cast<unsigned>(
+                    heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
 
   bootButtonInit();
   displayInit();
@@ -102,15 +154,37 @@ void setup() {
   services::weather::setPollFn(onNetworkPoll);
 
   if (wifiSetupConnect()) {
-    showRadarIfConnected();
+    Serial.printf("boot: wifi up, free heap=%lu largest=%u\n",
+                  static_cast<unsigned long>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(
+                      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+    wifiStartBootAutoPortal();
+    onLanPortalToggled();
   }
 }
 
 void loop() {
   handleBootButton();
   wifiLoop();
+  if (wifiConsumeAutoPortalTimeout()) {
+    onLanPortalToggled();
+  }
+  if (wifiConsumeWebExitRequest() && wifiLanPortalActive()) {
+    wifiToggleLanPortal();
+    onLanPortalToggled();
+  }
 
   if (services::ota::inProgress()) {
+    delay(10);
+    return;
+  }
+
+  if (wifiLanPortalActive()) {
+    // Aircraft/weather monitoring is paused while the LAN portal is on
+    // (see onLanPortalToggled()); nothing else to do here but let the
+    // portal's own HTTP handling (driven via wifiLoop() above) run and
+    // keep the boot auto-portal countdown (if any) up to date.
+    updatePortalCountdownIfDue();
     delay(10);
     return;
   }

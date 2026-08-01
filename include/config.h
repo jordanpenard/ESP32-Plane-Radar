@@ -28,6 +28,23 @@ constexpr gpio_num_t kBootPin = GPIO_NUM_9;
 constexpr unsigned long kBootResetHoldMs = 3000UL;
 /** Ignore BOOT taps shorter than this (debounce). */
 constexpr unsigned long kBootTapMinMs = 40UL;
+/** Hold BOOT this long (but under kBootResetHoldMs) to toggle the LAN
+ * config web portal on/off. It's off by default: the ESP32-C3 (320KB RAM,
+ * no PSRAM) can't spare the large contiguous heap block it permanently
+ * reserves once started, which otherwise starves ADS-B/weather TLS
+ * handshakes of the memory they need. */
+constexpr unsigned long kBootPortalToggleHoldMs = 1200UL;
+
+/** LAN config web portal auto-enables for this long right after boot, so
+ * the web UI is reachable without holding BOOT; if no portal activity
+ * (a page view or form save) happens within the window, it auto-reverts
+ * to normal (radar/ADS-B) mode to free the heap it reserves. Kept long
+ * enough (60s) for a human to notice the on-screen IP, unlock their
+ * phone/laptop, open a browser and type it in — the portal has no mDNS
+ * during this window (see startLanWebPortal()'s enable_mdns param), so
+ * only the raw numeric address works here, which takes longer to type
+ * than a bookmarked/remembered hostname. */
+constexpr unsigned long kBootPortalAutoWindowMs = 60000UL;
 
 // --- Display: GC9A01 1.28" round 240×240 (SPI) ---
 constexpr gpio_num_t kDisplayPinRst = GPIO_NUM_0;
@@ -45,8 +62,8 @@ constexpr bool kDisplayInvert = true;
 constexpr bool kDisplayRgbOrder = true;
 
 // --- Radar center defaults (overridden via WiFi setup portal) ---
-constexpr double kDefaultRadarLat = 52.3676;
-constexpr double kDefaultRadarLon = 4.9041;
+constexpr double kDefaultRadarLat = 48.7295;
+constexpr double kDefaultRadarLon = 2.3682;
 
 /** Poll adsb.fi (API public limit: 1 req/s). */
 constexpr unsigned long kAdsbFetchIntervalMs = 3000;
@@ -79,5 +96,13 @@ constexpr uint16_t kColorBlack = 0x0000;
 constexpr uint16_t kColorYellow = 0xFFE0;
 constexpr uint16_t kTextOnYellow = kColorBlack;
 constexpr uint16_t kTextOnBlack = 0xFFFF;
+
+// --- Optional interpolation diagnostics (Serial) ---
+// Set true temporarily to capture structured interpolation data in monitor.
+constexpr bool kInterpolationDebugLogEnabled = false;
+// Log cadence when enabled.
+constexpr unsigned long kInterpolationDebugLogIntervalMs = 1000UL;
+// If non-empty, only log this aircraft key (hex or callsign). Empty = auto.
+constexpr char kInterpolationDebugFocusKey[] = "";
 
 }  // namespace config

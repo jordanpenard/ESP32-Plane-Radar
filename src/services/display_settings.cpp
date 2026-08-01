@@ -20,6 +20,7 @@ constexpr char kKeyAltitudeOffsetFeet[] = "altOffFt";
 constexpr char kKeyAltitudeFilterEnabled[] = "altFilOn";
 constexpr char kKeyAltitudeFilterUnder[] = "altFilUnd";
 constexpr char kKeyAltitudeFilterThresholdFeet[] = "altFilFt";
+constexpr char kKeyAdsbInterpolation[] = "adsbIntrp";
 constexpr char kKeyInterpolationDelayMs[] = "interpDly";
 constexpr char kKeyClockFollowInterp[] = "clkIntrp";
 constexpr char kKeyClock24[] = "time24";
@@ -36,6 +37,7 @@ float s_altitude_offset_feet = 0.0f;
 bool s_altitude_filter_enabled = false;
 bool s_altitude_filter_hide_under = false;
 float s_altitude_filter_threshold_feet = 0.0f;
+bool s_adsb_interpolation_enabled = true;
 bool s_use_24_hour_clock = true;
 bool s_show_time_seconds = false;
 int s_text_scale_percent = kTextScaleDefaultPercent;
@@ -176,6 +178,7 @@ void loadDefaults() {
   s_altitude_filter_enabled = false;
   s_altitude_filter_hide_under = false;
   s_altitude_filter_threshold_feet = 0.0f;
+  s_adsb_interpolation_enabled = true;
   s_use_24_hour_clock = true;
   s_show_time_seconds = false;
   s_text_scale_percent = kTextScaleDefaultPercent;
@@ -197,6 +200,7 @@ void persist() {
   prefs.putBool(kKeyAltitudeFilterUnder, s_altitude_filter_hide_under);
   prefs.putFloat(kKeyAltitudeFilterThresholdFeet,
                  s_altitude_filter_threshold_feet);
+  prefs.putBool(kKeyAdsbInterpolation, s_adsb_interpolation_enabled);
   prefs.putBool(kKeyClock24, s_use_24_hour_clock);
   prefs.putBool(kKeyTimeSeconds, s_show_time_seconds);
   prefs.putInt(kKeyTextScale, s_text_scale_percent);
@@ -225,6 +229,7 @@ void init() {
   s_altitude_filter_hide_under = prefs.getBool(kKeyAltitudeFilterUnder, false);
   s_altitude_filter_threshold_feet =
       prefs.getFloat(kKeyAltitudeFilterThresholdFeet, 0.0f);
+  s_adsb_interpolation_enabled = prefs.getBool(kKeyAdsbInterpolation, true);
   s_use_24_hour_clock = prefs.getBool(kKeyClock24, true);
   s_show_time_seconds = prefs.getBool(kKeyTimeSeconds, false);
   s_text_scale_percent = clampTextScalePercent(
@@ -265,6 +270,8 @@ bool altitudeFilterHideUnder() { return s_altitude_filter_hide_under; }
 
 float altitudeFilterThresholdFeet() { return s_altitude_filter_threshold_feet; }
 
+bool adsbInterpolationEnabled() { return s_adsb_interpolation_enabled; }
+
 int interpolationDelayMs() { return s_interpolation_delay_ms; }
 
 bool clockFollowsInterpolationDelay() {
@@ -286,6 +293,7 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* altitude_filter_enabled_checkbox,
                     const char* altitude_filter_under_checkbox,
                     const char* altitude_filter_value,
+                    const char* adsb_interpolation_checkbox,
                     const char* interpolation_delay_ms_value,
                     const char* clock24_checkbox,
                     const char* time_seconds_checkbox,
@@ -307,6 +315,7 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
         use_miles ? altitude_filter_value_feet
                   : altitude_filter_value_feet / 0.3048f;
   }
+  s_adsb_interpolation_enabled = checkboxChecked(adsb_interpolation_checkbox);
   s_use_24_hour_clock = checkboxChecked(clock24_checkbox);
   s_show_time_seconds = checkboxChecked(time_seconds_checkbox);
   s_clock_follows_interpolation_delay =
@@ -338,6 +347,8 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                 s_altitude_filter_enabled ? "on" : "off",
                 s_altitude_filter_hide_under ? "hide below" : "hide above",
                 s_altitude_filter_threshold_feet);
+  Serial.printf("ADS-B interpolation: %s\n",
+                s_adsb_interpolation_enabled ? "on" : "off");
   Serial.printf("Interpolation delay: %d ms\n", s_interpolation_delay_ms);
 }
 

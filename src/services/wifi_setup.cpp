@@ -31,6 +31,7 @@
 
 portMUX_TYPE s_boot_mux = portMUX_INITIALIZER_UNLOCKED;
 volatile bool s_boot_tap_pending = false;
+volatile bool s_boot_portal_toggle_pending = false;
 volatile bool s_boot_is_down = false;
 volatile unsigned long s_boot_down_ms = 0;
 bool s_long_press_handled = false;
@@ -45,7 +46,10 @@ void IRAM_ATTR onBootButtonIsr() {
     s_boot_down_ms = now;
   } else if (s_boot_is_down) {
     const unsigned long held = now - s_boot_down_ms;
-    if (held >= config::kBootTapMinMs && held < config::kBootResetHoldMs) {
+    if (held >= config::kBootPortalToggleHoldMs &&
+        held < config::kBootResetHoldMs) {
+      s_boot_portal_toggle_pending = true;
+    } else if (held >= config::kBootTapMinMs) {
       s_boot_tap_pending = true;
     }
     s_boot_is_down = false;
@@ -72,9 +76,46 @@ constexpr char kPrefsForcePortalKey[] = "portal";
 bool s_force_config_portal = false;
 WiFiManager s_wm;
 bool s_wm_configured = false;
+// Off by default: the LAN portal's HTTP server + mDNS permanently reserve
+// the one large contiguous heap block that ADS-B/weather/lookup TLS
+// handshakes need on this 320KB-RAM, no-PSRAM board. Hold BOOT for
+// kBootPortalToggleHoldMs to turn it on when you actually need LAN access.
+bool s_lan_portal_wanted = false;
+
+// Boot auto-portal: enabled once right after connecting (see
+// wifiStartBootAutoPortal()), auto-disabled if no portal activity is seen
+// within config::kBootPortalAutoWindowMs (see wifiLoop()).
+bool s_boot_auto_portal_pending = false;
+unsigned long s_boot_auto_portal_started_ms = 0;
+unsigned long s_boot_auto_portal_deadline_ms = 0;
+// Tracks whether the currently-running LAN portal actually has mDNS up,
+// since that can't be inferred from s_boot_auto_portal_pending alone: once
+// activity cancels the boot auto-window, the countdown stops but mDNS was
+// never turned on for that session (see startLanWebPortal()'s enable_mdns).
+bool s_lan_portal_mdns_active = false;
+bool s_auto_portal_timeout_pending = false;
+unsigned long s_last_portal_activity_ms = 0;
+// Set by handleExitPortal() (our own claimed /exit route) when the user
+// clicks "Exit" in the portal; consumed once by wifiConsumeWebExitRequest()
+// so main.cpp can turn the portal off and resume radar mode the same way
+// the BOOT-button toggle does.
+bool s_web_exit_requested = false;
+
+void notePortalActivity() { s_last_portal_activity_ms = millis(); }
+
+// Pinged by a tiny inline <script> on both the /param page and the
+// portal's root menu page, so simply viewing either counts as activity
+// (not just submitting a form) for the boot auto-portal window above.
+constexpr char kPortalActivityBeacon[] =
+    "<script>fetch('/activity').catch(function(){});</script>";
 
 void ensureWifiManager();
-void startLanWebPortal();
+// `enable_mdns=false` skips MDNS.begin()/addService() (used for the boot
+// auto-portal window, see wifiStartBootAutoPortal()): mDNS is a suspected
+// contributor to the LAN portal's permanent largest-free-block
+// fragmentation, and the raw IP is already shown on the portal screen, so
+// skipping it there costs nothing but the ".local" hostname convenience.
+void startLanWebPortal(bool enable_mdns = true);
 void stopLanWebPortal();
 bool wifiLinkUp();
 void attachSettingsRoutes();
@@ -127,6 +168,32 @@ constexpr int kTextScaleParamLen = 4;
 
 char s_interpolation_preset_html[1800] = {};
 
+WiFiManagerParameter s_param_style(
+    "<style>"
+    ".pr-h{margin:1.3rem 0 .4rem;padding-top:.7rem;border-top:1px solid #e2e2e2;"
+    "font-size:1.05rem;font-weight:700;color:#1fa3ec}"
+    ".pr-h:first-of-type{margin-top:.1rem;padding-top:0;border-top:0}"
+    ".pr-hint{display:block;margin:-4px 0 8px;color:#767676;font-size:.82em;line-height:1.3}"
+    // Dims a field + its label while a related "enabled" checkbox is off.
+    ".pr-dim{opacity:.4}"
+    "</style>");
+WiFiManagerParameter s_script_activity_beacon(kPortalActivityBeacon);
+
+WiFiManagerParameter s_param_back_link_top(
+    "<div style=\"margin:0 0 1.1rem\">"
+    "<a href=\"/\" style=\"display:inline-block;padding:.35rem .85rem;"
+    "background:#eef6fc;color:#1fa3ec;border:1px solid #bfe3f7;"
+    "border-radius:.3rem;text-decoration:none;font-size:.92rem\">"
+    "&larr; Back to menu</a></div>");
+
+WiFiManagerParameter s_section_location("<h3 class=\"pr-h\">Location</h3>");
+WiFiManagerParameter s_section_display("<h3 class=\"pr-h\">Display</h3>");
+WiFiManagerParameter s_section_altitude("<h3 class=\"pr-h\">Altitude</h3>");
+WiFiManagerParameter s_section_clock("<h3 class=\"pr-h\">Clock</h3>");
+WiFiManagerParameter s_section_adsb(
+    "<h3 class=\"pr-h\">ADS-B &amp; interpolation</h3>");
+WiFiManagerParameter s_section_advanced("<h3 class=\"pr-h\">Advanced</h3>");
+
 WiFiManagerParameter s_param_lat("radar_lat", "Latitude (deg)", "0",
                                 kCoordParamLen, kLatitudeInputAttrs);
 WiFiManagerParameter s_param_lon("radar_lon", "Longitude (deg)", "0",
@@ -138,6 +205,16 @@ WiFiManagerParameter s_param_miles("use_miles", "Display distances in miles", "T
 char s_runways_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_runways("show_runways", "Show airport runways", "T", 2,
                                      s_runways_checkbox_attrs, WFM_LABEL_AFTER);
+
+// Hidden field actually submitted/saved; kept in sync with the visible
+// preset <select> below via JS (same pattern as the interpolation delay
+// presets further down).
+char s_radar_range_idx_default[4] = "1";
+WiFiManagerParameter s_param_radar_range_idx(
+    "radar_range_idx", "", s_radar_range_idx_default, 2,
+    "type=\"hidden\"", WFM_NO_LABEL);
+char s_range_preset_html[700] = {};
+WiFiManagerParameter s_param_range_preset(s_range_preset_html);
 
 char s_footer_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_footer("show_footer", "Show weather and clock", "T",
@@ -153,12 +230,14 @@ char s_fahrenheit_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_fahrenheit(
     "temp_f", "Temperature in Fahrenheit", "T", 2,
     s_fahrenheit_checkbox_attrs, WFM_LABEL_AFTER);
-
-WiFiManagerParameter s_param_after_fahrenheit_break("<br/>");
+WiFiManagerParameter s_break_fahrenheit("<br/>");
 
 WiFiManagerParameter s_param_altitude_offset(
   "alt_offset", "Altitude offset (same unit as Display distances)", "0", kAltitudeOffsetParamLen,
     kAltitudeOffsetInputAttrs);
+WiFiManagerParameter s_hint_altitude_offset(
+    "<small class=\"pr-hint\">Positive raises detected altitude, negative "
+    "lowers it (e.g. correct for a low-lying antenna site).</small>");
 
 char s_alt_filter_enabled_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_alt_filter_enabled(
@@ -168,23 +247,83 @@ WiFiManagerParameter s_param_alt_filter_enabled(
 char s_alt_filter_under_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_alt_filter_under(
   "alt_filter_under",
-  "Hide flights under threshold (unchecked: hide above)", "T", 2,
+  "Hide aircraft below the threshold (uncheck to hide above instead)", "T", 2,
   s_alt_filter_under_checkbox_attrs, WFM_LABEL_AFTER);
+WiFiManagerParameter s_break_alt_filter_under("<br/>");
 
 WiFiManagerParameter s_param_alt_filter_value(
   "alt_filter_value",
-  "Altitude filter threshold (same unit as Display distances)", "0",
+  "Threshold altitude (same unit as Display distances)", "0",
   kAltitudeOffsetParamLen, kAltitudeOffsetInputAttrs);
+WiFiManagerParameter s_hint_alt_filter(
+    "<small class=\"pr-hint\">Hides aircraft above or below this altitude, "
+    "depending on the checkbox above.</small>");
+// Grays out the threshold checkbox/field while the altitude filter itself
+// is disabled, since they have no effect in that state.
+WiFiManagerParameter s_script_alt_filter_toggle(
+    "<script>(function(){"
+    "var en=document.querySelector('[name=alt_filter_enabled]');"
+    "var under=document.querySelector('[name=alt_filter_under]');"
+    "var val=document.querySelector('[name=alt_filter_value]');"
+    "var underLabel=document.querySelector('label[for=alt_filter_under]');"
+    "var valLabel=document.querySelector('label[for=alt_filter_value]');"
+    "if(!en||!under||!val)return;"
+    "function sync(){"
+    "var on=en.checked;"
+    "under.disabled=!on;val.disabled=!on;"
+    "[under,val,underLabel,valLabel].forEach(function(el){"
+    "if(el)el.classList.toggle('pr-dim',!on);"
+    "});"
+    "}"
+    "sync();en.addEventListener('change',sync);"
+    "})();</script>");
 
 WiFiManagerParameter s_param_interpolation_delay(
     "interp_delay_ms", "Interpolation delay (ms)", "0",
     kInterpolationDelayParamLen, kInterpolationDelayInputAttrs);
 
+char s_adsb_interpolation_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_adsb_interpolation(
+  "adsb_interp", "ADS-B interpolation enabled", "T", 2,
+  s_adsb_interpolation_checkbox_attrs, WFM_LABEL_AFTER);
+WiFiManagerParameter s_break_adsb_interp("<br/>");
+
 WiFiManagerParameter s_param_interpolation_delay_presets(
   s_interpolation_preset_html);
+WiFiManagerParameter s_hint_interp(
+    "<small class=\"pr-hint\">Smooths aircraft motion between ADS-B fetches; "
+    "higher = smoother but more display latency.</small>");
 
+// Fetches elevation directly from the browser (open-meteo.com) instead of
+// routing it through the ESP32's own HTTPS stack: this button only ever
+// exists on the /param page, which is only served while the LAN portal is
+// active — and the portal itself permanently reserves the largest
+// contiguous heap block, so on-device TLS handshakes here are unreliable
+// no matter how the retry/threshold logic is tuned (confirmed on hardware:
+// SSL "Memory allocation failed" even above a 30KB largest-block gate).
+// Doing the fetch client-side sidesteps the constrained heap entirely.
 WiFiManagerParameter s_param_altitude_offset_button(
-    "<div style=\"margin-top:.5rem\"><button type=\"button\" onclick=\"var lat=document.querySelector('[name=radar_lat]');var lon=document.querySelector('[name=radar_lon]');var url='/altitudeoffsetauto';if(lat&&lon){url+='?lat='+encodeURIComponent(lat.value)+'&lon='+encodeURIComponent(lon.value);}window.location=url;\">Use location elevation</button></div>");
+    "<div style=\"margin-top:.5rem\"><button type=\"button\" id=\"autoElevBtn\" "
+    "onclick=\"var lat=document.querySelector('[name=radar_lat]');"
+    "var lon=document.querySelector('[name=radar_lon]');"
+    "var miles=document.querySelector('[name=use_miles]');"
+    "var off=document.querySelector('[name=alt_offset]');"
+    "var btn=document.getElementById('autoElevBtn');"
+    "if(!lat||!lon||!off){return;}"
+    "btn.disabled=true;btn.textContent='Fetching...';"
+    "var url='https://api.open-meteo.com/v1/forecast?latitude='+encodeURIComponent(lat.value)"
+    "+'&longitude='+encodeURIComponent(lon.value)+'&current=temperature_2m&forecast_days=1&timezone=auto';"
+    "fetch(url).then(function(r){return r.json();}).then(function(d){"
+    "var elevM=d.elevation;"
+    "if(typeof elevM!=='number'||isNaN(elevM)){throw new Error('no elevation');}"
+    "var offsetFeet=-elevM/0.3048;"
+    "var useMiles=miles&&miles.checked;"
+    "off.value=(useMiles?offsetFeet:offsetFeet*0.3048).toFixed(1);"
+    "btn.textContent='Use location elevation';btn.disabled=false;"
+    "}).catch(function(e){"
+    "alert('Could not fetch location elevation');"
+    "btn.textContent='Use location elevation';btn.disabled=false;"
+    "});\">Use location elevation</button></div>");
 
 char s_clock24_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_clock24("clock_24", "Use 24-hour clock", "T", 2,
@@ -200,8 +339,6 @@ char s_clock_follow_interp_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_clock_follow_interp(
     "clock_follow_interp", "Clock follows interpolation delay", "T", 2,
     s_clock_follow_interp_checkbox_attrs, WFM_LABEL_AFTER);
-
-WiFiManagerParameter s_param_after_clock_break("<br/>");
 
 constexpr char kTextScaleAttrs[] =
     "type=\"range\" min=\"80\" max=\"130\" step=\"5\" "
@@ -226,6 +363,10 @@ WiFiManagerParameter s_param_ota_password(
 
 WiFiManagerParameter s_param_diag_link(
   "<div style=\"margin-top:.75rem\"><a href=\"/diag\">Diagnostics</a></div>");
+
+WiFiManagerParameter s_param_back_link_bottom(
+    "<div style=\"margin-top:.75rem\"><a href=\"/\">&larr; Back to menu</a>"
+    "</div>");
 
 void refreshCheckboxAttrs(char* attrs, size_t attrs_len, bool checked) {
   snprintf(attrs, attrs_len, "type=\"checkbox\"%s",
@@ -279,8 +420,39 @@ void refreshInterpolationDelayPresetHtml() {
       fetch_ms, p0, p0, p1, p1, p2, p2, p3, p3, p0, p1, p2, p3);
 }
 
+void refreshRangePresetHtml() {
+  snprintf(s_radar_range_idx_default, sizeof(s_radar_range_idx_default), "%u",
+           static_cast<unsigned>(ui::radar::rangeIndex()));
+  s_param_radar_range_idx.setValue(s_radar_range_idx_default,
+                                   sizeof(s_radar_range_idx_default) - 1);
+
+  char options[512] = {};
+  size_t pos = 0;
+  for (size_t i = 0; i < ui::radar::kRangePresetCount; ++i) {
+    char label[16];
+    ui::radar::formatRing3Label(label, sizeof(label),
+                                ui::radar::kRangePresets[i].ring3_km,
+                                ui::radar::useMiles());
+    pos += static_cast<size_t>(snprintf(
+        options + pos, sizeof(options) - pos, "<option value=\"%u\"%s>%s</option>",
+        static_cast<unsigned>(i),
+        (i == ui::radar::rangeIndex()) ? " selected" : "", label));
+  }
+
+  snprintf(
+      s_range_preset_html, sizeof(s_range_preset_html),
+      "<div style=\"margin-top:.35rem\">"
+      "<label for=\"radar_range_preset\" style=\"font-size:.92em\">"
+      "Radar range</label><br>"
+      "<select id=\"radar_range_preset\" style=\"width:100%%;max-width:18rem\" "
+      "onchange=\"(function(v){var i=document.querySelector('[name=radar_range_idx]');"
+      "if(i){i.value=v;}})(this.value)\">%s</select></div>",
+      options);
+}
+
 void refreshPortalParamDefaults() {
   refreshInterpolationDelayPresetHtml();
+  refreshRangePresetHtml();
   char lat_buf[kCoordParamLen + 1];
   char lon_buf[kCoordParamLen + 1];
   snprintf(lat_buf, sizeof(lat_buf), "%.6f", services::location::lat());
@@ -307,7 +479,6 @@ void refreshPortalParamDefaults() {
                        sizeof(s_fahrenheit_checkbox_attrs),
                        services::settings::temperatureFahrenheit());
   s_param_fahrenheit.setValue("T", 2);
-  s_param_after_fahrenheit_break.setValue("<br/>", 5);
   char altitude_offset_buf[kAltitudeOffsetParamLen + 1];
   const float altitude_offset = services::units::useImperialDistance()
                                     ? services::settings::altitudeOffsetFeet()
@@ -337,6 +508,10 @@ void refreshPortalParamDefaults() {
            services::settings::interpolationDelayMs());
   s_param_interpolation_delay.setValue(interpolation_delay_buf,
                                        kInterpolationDelayParamLen);
+  refreshCheckboxAttrs(s_adsb_interpolation_checkbox_attrs,
+                       sizeof(s_adsb_interpolation_checkbox_attrs),
+                       services::settings::adsbInterpolationEnabled());
+  s_param_adsb_interpolation.setValue("T", 2);
   refreshCheckboxAttrs(s_clock24_checkbox_attrs,
                        sizeof(s_clock24_checkbox_attrs),
                        services::settings::use24HourClock());
@@ -363,6 +538,7 @@ void onPortalParamsSaved() {
   }
   ui::radar::saveMilesFromPortal(s_param_miles.getValue());
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
+  ui::radar::saveRangeIndexFromPortal(s_param_radar_range_idx.getValue());
   services::settings::saveFromPortal(
       s_param_footer.getValue(), s_param_weather.getValue(),
       s_param_fahrenheit.getValue(), services::units::useImperialDistance(),
@@ -370,6 +546,7 @@ void onPortalParamsSaved() {
       s_param_alt_filter_enabled.getValue(),
       s_param_alt_filter_under.getValue(),
       s_param_alt_filter_value.getValue(),
+      s_param_adsb_interpolation.getValue(),
       s_param_interpolation_delay.getValue(),
       s_param_clock24.getValue(),
       s_param_time_seconds.getValue(),
@@ -378,130 +555,12 @@ void onPortalParamsSaved() {
       s_param_ota_password.getValue());
 }
 
-bool parseQueryCoord(const String& value, double* out) {
-  if (out == nullptr || value.length() == 0) {
-    return false;
-  }
-  char* end = nullptr;
-  const double parsed = std::strtod(value.c_str(), &end);
-  if (end == value.c_str() || (end != nullptr && *end != '\0')) {
-    return false;
-  }
-  *out = parsed;
-  return true;
-}
-
-bool validLatLon(double lat, double lon) {
-  return lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0;
-}
-
-bool prepareSecureClient(WiFiClientSecure* client, const char* tag) {
-  if (client == nullptr) {
-    return false;
-  }
-  constexpr uint32_t kMinHeapForSslBytes = 52000;
-  const uint32_t free_heap = ESP.getFreeHeap();
-  if (free_heap < kMinHeapForSslBytes) {
-    Serial.printf("%s: skip TLS, low heap=%lu\n", tag,
-                  static_cast<unsigned long>(free_heap));
-    return false;
-  }
-  client->setInsecure();
-  return true;
-}
-
-bool fetchElevationMeters(double latitude, double longitude, float* elevation_m) {
-  if (elevation_m == nullptr) {
-    return false;
-  }
-
-  String url = config::kWeatherApiBase;
-  url += "?latitude=";
-  url += String(latitude, 6);
-  url += "&longitude=";
-  url += String(longitude, 6);
-  url += "&current=temperature_2m&forecast_days=1&timezone=auto";
-
-  WiFiClientSecure client;
-  if (!prepareSecureClient(&client, "altitude offset")) {
-    return false;
-  }
-
-  HTTPClient http;
-  if (!http.begin(client, url)) {
-    Serial.println("altitude offset: http.begin failed");
-    return false;
-  }
-  http.setConnectTimeout(config::kWeatherRequestTimeoutMs);
-  http.setTimeout(config::kWeatherRequestTimeoutMs);
-
-  const int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("altitude offset: HTTP %d\n", code);
-    http.end();
-    return false;
-  }
-
-  const String payload = http.getString();
-  http.end();
-
-  JsonDocument doc;
-  const DeserializationError error = deserializeJson(doc, payload);
-  if (error) {
-    Serial.printf("altitude offset: JSON parse error: %s\n", error.c_str());
-    return false;
-  }
-
-  const float elevation = doc["elevation"] | NAN;
-  if (!std::isfinite(elevation)) {
-    Serial.println("altitude offset: missing elevation");
-    return false;
-  }
-
-  *elevation_m = elevation;
-  return true;
-}
-
-void handleAltitudeOffsetAuto() {
-  if (!s_wm.server) {
-    return;
-  }
-
-  WebServer& web = *s_wm.server;
-  double latitude = services::location::lat();
-  double longitude = services::location::lon();
-
-  if (web.hasArg("lat") && !parseQueryCoord(web.arg("lat"), &latitude)) {
-    web.send(400, "text/plain", "Invalid latitude");
-    return;
-  }
-  if (web.hasArg("lon") && !parseQueryCoord(web.arg("lon"), &longitude)) {
-    web.send(400, "text/plain", "Invalid longitude");
-    return;
-  }
-  if (!validLatLon(latitude, longitude)) {
-    web.send(400, "text/plain", "Invalid latitude/longitude range");
-    return;
-  }
-
-  float elevation_m = 0.0f;
-  if (!fetchElevationMeters(latitude, longitude, &elevation_m)) {
-    web.send(502, "text/plain", "Could not fetch location elevation");
-    return;
-  }
-
-  services::settings::setAltitudeOffsetFeet(-elevation_m / 0.3048f);
-  refreshPortalParamDefaults();
-
-  web.sendHeader("Location", "/param", true);
-  web.send(302, "text/plain", "");
-}
-
 void savePortalParamsFromRequest(WebServer& web) {
   const String latitude = web.arg("radar_lat");
   const String longitude = web.arg("radar_lon");
   const String miles = web.arg("use_miles");
   const String runways = web.arg("show_runways");
+  const String range_idx = web.arg("radar_range_idx");
   const String footer = web.arg("show_footer");
   const String weather = web.arg("show_weather");
   const String fahrenheit = web.arg("temp_f");
@@ -509,6 +568,7 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String altitude_filter_enabled = web.arg("alt_filter_enabled");
   const String altitude_filter_under = web.arg("alt_filter_under");
   const String altitude_filter_value = web.arg("alt_filter_value");
+  const String adsb_interpolation = web.arg("adsb_interp");
   const String interpolation_delay_ms = web.arg("interp_delay_ms");
   const String clock24 = web.arg("clock_24");
   const String time_seconds = web.arg("time_seconds");
@@ -522,11 +582,13 @@ void savePortalParamsFromRequest(WebServer& web) {
   }
   ui::radar::saveMilesFromPortal(miles.c_str());
   ui::radar::saveRunwaysFromPortal(runways.c_str());
+  ui::radar::saveRangeIndexFromPortal(range_idx.c_str());
   services::settings::saveFromPortal(
       footer.c_str(), weather.c_str(), fahrenheit.c_str(),
       services::units::useImperialDistance(), altitude_offset.c_str(),
       altitude_filter_enabled.c_str(), altitude_filter_under.c_str(),
       altitude_filter_value.c_str(),
+      adsb_interpolation.c_str(),
       interpolation_delay_ms.c_str(), clock24.c_str(),
       time_seconds.c_str(),
       clock_follow_interp.c_str(),
@@ -538,13 +600,44 @@ void handleDiagnosticsPage() {
   if (!s_wm.server) {
     return;
   }
+  notePortalActivity();
   s_wm.server->send(200, "text/html", diagnosticsHtml());
+}
+
+void handleActivityPing() {
+  notePortalActivity();
+  if (s_wm.server) {
+    s_wm.server->send(204, "text/plain", "");
+  }
+}
+
+void handleExitPortal() {
+  if (!s_wm.server) {
+    return;
+  }
+  notePortalActivity();
+  s_web_exit_requested = true;
+  s_wm.server->sendHeader("Cache-Control",
+                          "no-cache, no-store, must-revalidate");
+  s_wm.server->send(
+      200, "text/html",
+      "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+      "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<title>LAN config closed</title>"
+      "<style>body{font-family:verdana;text-align:center;margin:0;padding:3rem}"
+      ".msg{display:inline-block;min-width:16rem;text-align:left;padding:1.5rem;"
+      "border:1px solid #eee;border-left:5px solid #5cb85c;"
+      "border-radius:.3rem}</style></head><body>"
+      "<div class='msg'><strong>LAN config closed</strong><br>"
+      "<small>Returning to radar mode. You can close this tab.</small>"
+      "</div></body></html>");
 }
 
 void handleSettingsSaved() {
   if (!s_wm.server) {
     return;
   }
+  notePortalActivity();
 
   WebServer& web = *s_wm.server;
   savePortalParamsFromRequest(web);
@@ -571,35 +664,66 @@ void attachSettingsRoutes() {
   // Register before WiFiManager's built-in /paramsave handler so the custom
   // confirmation can redirect back to Setup.
   s_wm.server->on("/paramsave", HTTP_POST, handleSettingsSaved);
-  s_wm.server->on("/altitudeoffsetauto", HTTP_GET, handleAltitudeOffsetAuto);
   s_wm.server->on("/diag", HTTP_GET, handleDiagnosticsPage);
+  s_wm.server->on("/activity", HTTP_GET, handleActivityPing);
+  // Claim WiFiManager's built-in /exit before it registers its own: that
+  // default handler just tears down its own webserver/mDNS via an internal
+  // "abort" flag, leaving our s_lan_portal_wanted state unaware, so
+  // wifiLoop() would immediately restart it. Ours instead flags the exit
+  // for wifiConsumeWebExitRequest() to act on through the normal toggle path.
+  s_wm.server->on("/exit", HTTP_GET, handleExitPortal);
 }
 
 void attachPortalParams(WiFiManager& wm) {
   refreshPortalParamDefaults();
+  wm.addParameter(&s_param_style);
+  wm.addParameter(&s_script_activity_beacon);
+  wm.addParameter(&s_param_back_link_top);
+
+  wm.addParameter(&s_section_location);
   wm.addParameter(&s_param_lat);
   wm.addParameter(&s_param_lon);
+
+  wm.addParameter(&s_section_altitude);
+  wm.addParameter(&s_param_altitude_offset);
+  wm.addParameter(&s_hint_altitude_offset);
+  wm.addParameter(&s_param_altitude_offset_button);
+  wm.addParameter(&s_param_alt_filter_enabled);
+  wm.addParameter(&s_param_alt_filter_under);
+  wm.addParameter(&s_break_alt_filter_under);
+  wm.addParameter(&s_param_alt_filter_value);
+  wm.addParameter(&s_hint_alt_filter);
+  wm.addParameter(&s_script_alt_filter_toggle);
+
+  wm.addParameter(&s_section_display);
   wm.addParameter(&s_param_miles);
   wm.addParameter(&s_param_runways);
+  wm.addParameter(&s_param_radar_range_idx);
+  wm.addParameter(&s_param_range_preset);
   wm.addParameter(&s_param_footer);
   wm.addParameter(&s_param_weather);
   wm.addParameter(&s_param_fahrenheit);
-  wm.addParameter(&s_param_after_fahrenheit_break);
-  wm.addParameter(&s_param_altitude_offset);
-  wm.addParameter(&s_param_alt_filter_enabled);
-  wm.addParameter(&s_param_alt_filter_under);
-  wm.addParameter(&s_param_alt_filter_value);
-  wm.addParameter(&s_param_interpolation_delay);
-  wm.addParameter(&s_param_interpolation_delay_presets);
-  wm.addParameter(&s_param_altitude_offset_button);
+  wm.addParameter(&s_break_fahrenheit);
+  wm.addParameter(&s_param_text_scale);
+  wm.addParameter(&s_param_text_scale_output);
+
+  wm.addParameter(&s_section_clock);
   wm.addParameter(&s_param_clock24);
   wm.addParameter(&s_param_time_seconds);
   wm.addParameter(&s_param_clock_follow_interp);
-  wm.addParameter(&s_param_after_clock_break);
-  wm.addParameter(&s_param_text_scale);
-  wm.addParameter(&s_param_text_scale_output);
+
+  wm.addParameter(&s_section_adsb);
+  wm.addParameter(&s_param_adsb_interpolation);
+  wm.addParameter(&s_break_adsb_interp);
+  wm.addParameter(&s_param_interpolation_delay);
+  wm.addParameter(&s_param_interpolation_delay_presets);
+  wm.addParameter(&s_hint_interp);
+
+  wm.addParameter(&s_section_advanced);
   wm.addParameter(&s_param_ota_password);
   wm.addParameter(&s_param_diag_link);
+  wm.addParameter(&s_param_back_link_bottom);
+
   wm.setSaveParamsCallback(onPortalParamsSaved);
 }
 
@@ -713,11 +837,11 @@ void ensureWifiManager() {
   s_wm.setTitle("Plane Radar");
   s_wm.setAPCallback(onConfigPortalApStarted);
   attachPortalParams(s_wm);
-  services::ota::configure(s_wm, attachSettingsRoutes);
+  services::ota::configure(s_wm, attachSettingsRoutes, kPortalActivityBeacon);
   s_wm_configured = true;
 }
 
-void startLanWebPortal() {
+void startLanWebPortal(bool enable_mdns) {
   if (!wifiLinkUp() || s_wm.getWebPortalActive() ||
       s_wm.getConfigPortalActive()) {
     return;
@@ -725,18 +849,28 @@ void startLanWebPortal() {
   refreshPortalParamDefaults();
   WiFi.mode(WIFI_STA);
   s_wm.setConfigPortalBlocking(false);
+  s_lan_portal_mdns_active = false;
 #ifdef WM_MDNS
-  MDNS.end();
-  if (MDNS.begin(config::kPortalHostname)) {
-    MDNS.addService("http", "tcp", 80);
+  if (enable_mdns) {
+    MDNS.end();
+    s_lan_portal_mdns_active = MDNS.begin(config::kPortalHostname);
+    if (s_lan_portal_mdns_active) {
+      MDNS.addService("http", "tcp", 80);
+    }
   }
 #endif
   s_wm.startWebPortal();
-  Serial.printf("LAN config: http://%s.local or http://%s\n",
-                config::kPortalHostname, WiFi.localIP().toString().c_str());
+  if (enable_mdns) {
+    Serial.printf("LAN config: http://%s.local or http://%s\n",
+                  config::kPortalHostname, WiFi.localIP().toString().c_str());
+  } else {
+    Serial.printf("LAN config: http://%s\n",
+                  WiFi.localIP().toString().c_str());
+  }
 }
 
 void stopLanWebPortal() {
+  s_lan_portal_mdns_active = false;
   if (!s_wm.getWebPortalActive()) {
     return;
   }
@@ -867,6 +1001,16 @@ bool bootButtonConsumeTap() {
   return tap;
 }
 
+bool bootButtonConsumePortalToggle() {
+  portENTER_CRITICAL(&s_boot_mux);
+  const bool toggle = s_boot_portal_toggle_pending;
+  if (toggle) {
+    s_boot_portal_toggle_pending = false;
+  }
+  portEXIT_CRITICAL(&s_boot_mux);
+  return toggle;
+}
+
 void bootButtonPollLongPress() {
   if (wifiBootButtonPressed()) {
     portENTER_CRITICAL(&s_boot_mux);
@@ -907,16 +1051,98 @@ bool wifiReconnect() {
 void wifiLoop() {
   ensureWifiManager();
   if (wifiLinkUp()) {
-    if (!s_wm.getWebPortalActive() && !s_wm.getConfigPortalActive()) {
-      startLanWebPortal();
+    if (s_lan_portal_wanted && !s_wm.getWebPortalActive() &&
+        !s_wm.getConfigPortalActive()) {
+      // Keep mDNS off if this (re)start happens while the boot auto-window
+      // is still pending, so an unexpected restart during that window
+      // can't reintroduce the mDNS heap-fragmentation cost it was
+      // specifically started without (see startLanWebPortal()).
+      startLanWebPortal(/*enable_mdns=*/!s_boot_auto_portal_pending);
     }
     if (s_wm.getWebPortalActive() || s_wm.getConfigPortalActive()) {
       bootButtonPollLongPress();
       s_wm.process();
     }
+    if (s_boot_auto_portal_pending) {
+      if (s_last_portal_activity_ms > s_boot_auto_portal_started_ms) {
+        // Someone opened the portal: hand off to normal manual control.
+        s_boot_auto_portal_pending = false;
+      } else if (millis() >= s_boot_auto_portal_deadline_ms) {
+        Serial.println(
+            "LAN portal: boot auto-window expired unused, disabling");
+        s_boot_auto_portal_pending = false;
+        s_lan_portal_wanted = false;
+        stopLanWebPortal();
+        s_auto_portal_timeout_pending = true;
+      }
+    }
   } else {
     stopLanWebPortal();
   }
+}
+
+void wifiToggleLanPortal() {
+  s_boot_auto_portal_pending = false;
+  s_lan_portal_wanted = !s_lan_portal_wanted;
+  if (s_lan_portal_wanted) {
+    Serial.println("LAN portal: enabled (hold BOOT again to disable)");
+    startLanWebPortal();
+  } else {
+    Serial.println("LAN portal: disabled, releasing heap");
+    stopLanWebPortal();
+  }
+}
+
+bool wifiLanPortalActive() { return s_lan_portal_wanted; }
+
+bool wifiLanPortalMdnsActive() { return s_lan_portal_mdns_active; }
+
+bool wifiPauseLanPortal() {
+  if (!s_wm.getWebPortalActive()) {
+    return false;
+  }
+  stopLanWebPortal();
+  return true;
+}
+
+void wifiStartBootAutoPortal() {
+  const unsigned long now = millis();
+  s_last_portal_activity_ms = now;
+  s_boot_auto_portal_started_ms = now;
+  s_boot_auto_portal_deadline_ms = now + config::kBootPortalAutoWindowMs;
+  s_boot_auto_portal_pending = true;
+  s_lan_portal_wanted = true;
+  startLanWebPortal(/*enable_mdns=*/false);
+  Serial.printf("LAN portal: auto-enabled for %lus after boot\n",
+                config::kBootPortalAutoWindowMs / 1000UL);
+}
+
+bool wifiConsumeAutoPortalTimeout() {
+  if (!s_auto_portal_timeout_pending) {
+    return false;
+  }
+  s_auto_portal_timeout_pending = false;
+  return true;
+}
+
+bool wifiConsumeWebExitRequest() {
+  if (!s_web_exit_requested) {
+    return false;
+  }
+  s_web_exit_requested = false;
+  return true;
+}
+
+long wifiBootAutoPortalSecondsLeft() {
+  if (!s_boot_auto_portal_pending) {
+    return -1;
+  }
+  const unsigned long now = millis();
+  if (now >= s_boot_auto_portal_deadline_ms) {
+    return 0;
+  }
+  return static_cast<long>((s_boot_auto_portal_deadline_ms - now + 999UL) /
+                           1000UL);
 }
 
 bool wifiSetupConnect() {

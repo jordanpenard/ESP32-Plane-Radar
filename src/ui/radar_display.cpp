@@ -90,10 +90,22 @@ struct AircraftScreenTrack {
   int y = 0;
 };
 
+struct AircraftDisplayTrack {
+  bool valid = false;
+  char key[9] = {};
+  float lat = 0.0f;
+  float lon = 0.0f;
+  bool has_altitude = false;
+  float altitude_ft = 0.0f;
+  unsigned long last_ms = 0;
+};
+
 AircraftScreenTrack s_aircraft_screen_tracks[services::adsb::kMaxAircraft] = {};
 size_t s_aircraft_track_replace_cursor = 0;
 uint8_t s_aircraft_track_range_index = 255;
 bool s_aircraft_track_use_miles = false;
+AircraftDisplayTrack s_aircraft_display_tracks[services::adsb::kMaxAircraft] = {};
+size_t s_aircraft_display_track_replace_cursor = 0;
 
 class DrawScope {
  public:
@@ -142,9 +154,18 @@ float findVlwSizeForHeight(int target_px) {
 void applyScaleStyle();
 void updateFooterCacheIfNeeded();
 void syncAircraftScreenTrackDomain();
+void makeAircraftTrackKey(const services::adsb::Aircraft& plane, char* out,
+                         size_t out_len);
 void smoothAircraftScreenPosition(const services::adsb::Aircraft& plane,
                                   int target_x, int target_y, int* out_x,
                                   int* out_y);
+void applyDisplayContinuityFilter(const services::adsb::Aircraft& plane,
+                                  float target_lat, float target_lon,
+                                  bool has_target_altitude,
+                                  float target_altitude_ft, float* out_lat,
+                                  float* out_lon, bool* out_has_altitude,
+                                  float* out_altitude_ft);
+void formatAltitudeFromFeet(float altitude_ft, char* out, size_t out_len);
 
 const lgfx::GFXfont* pickGfxFontClosest(
     int target_px, const lgfx::GFXfont* const* candidates, size_t count) {
@@ -269,6 +290,305 @@ void initPalette() {
 constexpr float kKmPerDeg = 111.0f;
 constexpr float kDegToRad = 0.01745329252f;
 constexpr unsigned long kInterpolationMaxMs = 4000UL;
+constexpr float kExtrapolationGain = 0.45f;
+constexpr float kDisplayPositionTauSec = 1.4f;
+constexpr float kDisplayAltitudeTauSec = 1.8f;
+
+struct MotionSample {
+  bool valid = false;
+  unsigned long sample_ms = 0;
+  float lat = 0.0f;
+  float lon = 0.0f;
+  bool has_altitude = false;
+  float altitude_ft = 0.0f;
+};
+
+struct AircraftMotionHistory {
+  bool valid = false;
+  char key[9] = {};
+  MotionSample samples[3] = {};
+  uint8_t next = 0;
+  uint8_t count = 0;
+};
+
+AircraftMotionHistory s_aircraft_motion_histories[services::adsb::kMaxAircraft] =
+    {};
+size_t s_aircraft_motion_replace_cursor = 0;
+unsigned long s_motion_history_last_fetch_ms = 0;
+
+struct InterpolationDebugState {
+  bool header_printed = false;
+  bool has_prev = false;
+  char key[9] = {};
+  unsigned long last_log_ms = 0;
+  float prev_lat = 0.0f;
+  float prev_lon = 0.0f;
+  float prev_alt_ft = 0.0f;
+};
+
+InterpolationDebugState s_interp_debug = {};
+
+float lonKmPerDegAtLat(float lat_deg) {
+  const float scale = cosf(lat_deg * kDegToRad);
+  return kKmPerDeg * std::max(0.20f, fabsf(scale));
+}
+
+float median3(float a, float b, float c) {
+  if (a > b) {
+    const float t = a;
+    a = b;
+    b = t;
+  }
+  if (b > c) {
+    const float t = b;
+    b = c;
+    c = t;
+  }
+  if (a > b) {
+    const float t = a;
+    a = b;
+    b = t;
+  }
+  return b;
+}
+
+float combinedEstimate(const float* values, size_t count, float fallback) {
+  if (count == 0 || values == nullptr) {
+    return fallback;
+  }
+  if (count == 1) {
+    return values[0];
+  }
+  if (count == 2) {
+    return (values[0] + values[1]) * 0.5f;
+  }
+  return median3(values[0], values[1], values[2]);
+}
+
+AircraftMotionHistory* findMotionHistorySlot(const char* key, bool create) {
+  if (key == nullptr || key[0] == '\0') {
+    return nullptr;
+  }
+
+  for (auto& history : s_aircraft_motion_histories) {
+    if (history.valid && strcmp(history.key, key) == 0) {
+      return &history;
+    }
+  }
+  if (!create) {
+    return nullptr;
+  }
+
+  for (auto& history : s_aircraft_motion_histories) {
+    if (!history.valid) {
+      history = {};
+      history.valid = true;
+      strncpy(history.key, key, sizeof(history.key) - 1);
+      history.key[sizeof(history.key) - 1] = '\0';
+      return &history;
+    }
+  }
+
+  AircraftMotionHistory* slot =
+      &s_aircraft_motion_histories[s_aircraft_motion_replace_cursor %
+                                   services::adsb::kMaxAircraft];
+  s_aircraft_motion_replace_cursor =
+      (s_aircraft_motion_replace_cursor + 1) % services::adsb::kMaxAircraft;
+  *slot = {};
+  slot->valid = true;
+  strncpy(slot->key, key, sizeof(slot->key) - 1);
+  slot->key[sizeof(slot->key) - 1] = '\0';
+  return slot;
+}
+
+bool historySampleByAge(const AircraftMotionHistory& history, uint8_t age,
+                        MotionSample* out) {
+  if (out == nullptr || age >= history.count) {
+    return false;
+  }
+  const int newest_index = (static_cast<int>(history.next) + 2) % 3;
+  const int index = (newest_index - static_cast<int>(age) + 3) % 3;
+  const MotionSample& sample = history.samples[index];
+  if (!sample.valid) {
+    return false;
+  }
+  *out = sample;
+  return true;
+}
+
+void appendMotionSample(AircraftMotionHistory* history,
+                        const services::adsb::Aircraft& plane,
+                        unsigned long fetch_ms) {
+  if (history == nullptr) {
+    return;
+  }
+
+  if (history->count > 0) {
+    MotionSample latest = {};
+    if (historySampleByAge(*history, 0, &latest) &&
+        latest.sample_ms == fetch_ms) {
+      const int newest_index = (static_cast<int>(history->next) + 2) % 3;
+      MotionSample& sample = history->samples[newest_index];
+      sample.lat = plane.lat;
+      sample.lon = plane.lon;
+      sample.has_altitude = plane.has_altitude;
+      sample.altitude_ft = plane.altitude_ft;
+      return;
+    }
+  }
+
+  MotionSample& slot = history->samples[history->next % 3];
+  slot.valid = true;
+  slot.sample_ms = fetch_ms;
+  slot.lat = plane.lat;
+  slot.lon = plane.lon;
+  slot.has_altitude = plane.has_altitude;
+  slot.altitude_ft = plane.altitude_ft;
+
+  history->next = (history->next + 1) % 3;
+  if (history->count < 3) {
+    ++history->count;
+  }
+}
+
+void updateMotionHistoriesIfNeeded(const services::adsb::Aircraft* planes,
+                                   size_t count) {
+  const unsigned long fetch_ms = services::adsb::lastFetchUpdateMs();
+  if (planes == nullptr || fetch_ms == 0 || count == 0 ||
+      fetch_ms == s_motion_history_last_fetch_ms) {
+    return;
+  }
+  s_motion_history_last_fetch_ms = fetch_ms;
+
+  for (size_t i = 0; i < count; ++i) {
+    char key[9] = {};
+    makeAircraftTrackKey(planes[i], key, sizeof(key));
+    AircraftMotionHistory* history = findMotionHistorySlot(key, true);
+    appendMotionSample(history, planes[i], fetch_ms);
+  }
+}
+
+bool estimateMotionKmh(const services::adsb::Aircraft& plane, float* vx_kmh,
+                       float* vy_kmh) {
+  if (vx_kmh == nullptr || vy_kmh == nullptr) {
+    return false;
+  }
+
+  float vx_candidates[3] = {};
+  float vy_candidates[3] = {};
+  size_t candidate_count = 0;
+
+  const float adsb_speed_kmh = std::max(0.0f, plane.gs_knots) * 1.852f;
+  const float adsb_track_rad = plane.track_deg * kDegToRad;
+  const float adsb_vx_kmh = sinf(adsb_track_rad) * adsb_speed_kmh;
+  const float adsb_vy_kmh = cosf(adsb_track_rad) * adsb_speed_kmh;
+  vx_candidates[candidate_count] = adsb_vx_kmh;
+  vy_candidates[candidate_count] = adsb_vy_kmh;
+  ++candidate_count;
+
+  char key[9] = {};
+  makeAircraftTrackKey(plane, key, sizeof(key));
+  AircraftMotionHistory* history = findMotionHistorySlot(key, false);
+  if (history != nullptr && history->count >= 2) {
+    MotionSample s0 = {};
+    MotionSample s1 = {};
+    if (historySampleByAge(*history, 0, &s0) &&
+        historySampleByAge(*history, 1, &s1) &&
+        s0.sample_ms > s1.sample_ms) {
+      const float dt_h =
+          std::max(0.0001f,
+                   static_cast<float>(s0.sample_ms - s1.sample_ms) / 3600000.0f);
+      const float avg_lat = (s0.lat + s1.lat) * 0.5f;
+      vx_candidates[candidate_count] =
+          ((s0.lon - s1.lon) * lonKmPerDegAtLat(avg_lat)) / dt_h;
+      vy_candidates[candidate_count] = ((s0.lat - s1.lat) * kKmPerDeg) / dt_h;
+      ++candidate_count;
+    }
+  }
+
+  if (history != nullptr && history->count >= 3 && candidate_count < 3) {
+    MotionSample s1 = {};
+    MotionSample s2 = {};
+    if (historySampleByAge(*history, 1, &s1) &&
+        historySampleByAge(*history, 2, &s2) &&
+        s1.sample_ms > s2.sample_ms) {
+      const float dt_h =
+          std::max(0.0001f,
+                   static_cast<float>(s1.sample_ms - s2.sample_ms) / 3600000.0f);
+      const float avg_lat = (s1.lat + s2.lat) * 0.5f;
+      vx_candidates[candidate_count] =
+          ((s1.lon - s2.lon) * lonKmPerDegAtLat(avg_lat)) / dt_h;
+      vy_candidates[candidate_count] = ((s1.lat - s2.lat) * kKmPerDeg) / dt_h;
+      ++candidate_count;
+    }
+  }
+
+  if (candidate_count == 1 && adsb_speed_kmh <= 0.0f) {
+    *vx_kmh = 0.0f;
+    *vy_kmh = 0.0f;
+    return false;
+  }
+
+  *vx_kmh = combinedEstimate(vx_candidates, candidate_count, adsb_vx_kmh);
+  *vy_kmh = combinedEstimate(vy_candidates, candidate_count, adsb_vy_kmh);
+
+  float max_observed_speed = adsb_speed_kmh;
+  for (size_t i = 1; i < candidate_count; ++i) {
+    const float speed =
+        sqrtf(vx_candidates[i] * vx_candidates[i] + vy_candidates[i] * vy_candidates[i]);
+    if (speed > max_observed_speed) {
+      max_observed_speed = speed;
+    }
+  }
+  const float max_speed = std::max(55.0f, max_observed_speed * 1.30f);
+  const float estimate_speed = sqrtf((*vx_kmh) * (*vx_kmh) + (*vy_kmh) * (*vy_kmh));
+  if (estimate_speed > max_speed && estimate_speed > 0.01f) {
+    const float scale = max_speed / estimate_speed;
+    *vx_kmh *= scale;
+    *vy_kmh *= scale;
+  }
+  return true;
+}
+
+float effectiveVerticalRateFpm(const services::adsb::Aircraft& plane) {
+  if (!plane.has_altitude || plane.on_ground) {
+    return 0.0f;
+  }
+
+  float candidates[3] = {};
+  size_t count = 0;
+  candidates[count++] = plane.vertical_rate_fpm;
+
+  char key[9] = {};
+  makeAircraftTrackKey(plane, key, sizeof(key));
+  AircraftMotionHistory* history = findMotionHistorySlot(key, false);
+  if (history != nullptr && history->count >= 2) {
+    MotionSample s0 = {};
+    MotionSample s1 = {};
+    if (historySampleByAge(*history, 0, &s0) &&
+        historySampleByAge(*history, 1, &s1) && s0.has_altitude &&
+        s1.has_altitude && s0.sample_ms > s1.sample_ms) {
+      const float dt_min =
+          std::max(0.02f,
+                   static_cast<float>(s0.sample_ms - s1.sample_ms) / 60000.0f);
+      candidates[count++] = (s0.altitude_ft - s1.altitude_ft) / dt_min;
+    }
+  }
+  if (history != nullptr && history->count >= 3 && count < 3) {
+    MotionSample s1 = {};
+    MotionSample s2 = {};
+    if (historySampleByAge(*history, 1, &s1) &&
+        historySampleByAge(*history, 2, &s2) && s1.has_altitude &&
+        s2.has_altitude && s1.sample_ms > s2.sample_ms) {
+      const float dt_min =
+          std::max(0.02f,
+                   static_cast<float>(s1.sample_ms - s2.sample_ms) / 60000.0f);
+      candidates[count++] = (s1.altitude_ft - s2.altitude_ft) / dt_min;
+    }
+  }
+
+  return combinedEstimate(candidates, count, plane.vertical_rate_fpm);
+}
 
 enum class AltitudeTrend : uint8_t {
   kDown = 0,
@@ -285,41 +605,186 @@ unsigned long interpolationRawElapsedMs() {
 }
 
 unsigned long interpolationExtrapolationElapsedMs(unsigned long raw_elapsed_ms) {
+  if (!services::settings::adsbInterpolationEnabled()) {
+    return 0;
+  }
   const unsigned long delay_ms =
       static_cast<unsigned long>(services::settings::interpolationDelayMs());
   if (raw_elapsed_ms <= delay_ms) {
     return 0;
   }
   unsigned long elapsed_ms = raw_elapsed_ms - delay_ms;
-  if (elapsed_ms > kInterpolationMaxMs) {
-    elapsed_ms = kInterpolationMaxMs;
-  }
+  // Limit prediction horizon to a short segment of the fetch interval.
+  // This favors continuity over aggressive forward projection.
+  const unsigned long adaptive_cap_ms =
+      std::min(kInterpolationMaxMs,
+               static_cast<unsigned long>(config::kAdsbFetchIntervalMs) / 5UL);
+  elapsed_ms = std::min(elapsed_ms, adaptive_cap_ms);
   return elapsed_ms;
+}
+
+float interpolationBaseBlendAlpha(const services::adsb::Aircraft& plane,
+                                  unsigned long raw_elapsed_ms) {
+  if (!services::settings::adsbInterpolationEnabled() ||
+      !plane.has_prev_sample) {
+    return 1.0f;
+  }
+
+  const unsigned long delay_ms =
+      static_cast<unsigned long>(services::settings::interpolationDelayMs());
+  if (delay_ms == 0 || raw_elapsed_ms >= delay_ms) {
+    return 1.0f;
+  }
+
+  const float sample_ms =
+      std::max(1.0f, static_cast<float>(config::kAdsbFetchIntervalMs));
+  const float delayed_offset_ms = sample_ms - static_cast<float>(delay_ms) +
+                                  static_cast<float>(raw_elapsed_ms);
+  float alpha = delayed_offset_ms / sample_ms;
+  alpha = std::max(0.0f, std::min(1.0f, alpha));
+  return alpha;
+}
+
+bool interpolationDisplayAltitudeFt(const services::adsb::Aircraft& plane,
+                                    unsigned long raw_elapsed_ms,
+                                    unsigned long extrapolation_elapsed_ms,
+                                    float* out_ft) {
+  if (out_ft == nullptr || plane.on_ground || !plane.has_altitude) {
+    return false;
+  }
+  const float alpha = interpolationBaseBlendAlpha(plane, raw_elapsed_ms);
+  float altitude_ft = plane.altitude_ft;
+  if (plane.has_prev_sample && plane.prev_has_altitude) {
+    altitude_ft =
+        plane.prev_altitude_ft + (plane.altitude_ft - plane.prev_altitude_ft) * alpha;
+  }
+  altitude_ft += effectiveVerticalRateFpm(plane) *
+                 ((static_cast<float>(extrapolation_elapsed_ms) *
+                   kExtrapolationGain) /
+                  60000.0f);
+  altitude_ft += services::settings::altitudeOffsetFeet();
+  *out_ft = altitude_ft;
+  return true;
+}
+
+bool keyMatchesFocusFilter(const char* key) {
+  if (config::kInterpolationDebugFocusKey[0] == '\0') {
+    return true;
+  }
+  return key != nullptr && key[0] != '\0' &&
+         strcmp(key, config::kInterpolationDebugFocusKey) == 0;
+}
+
+void maybeLogInterpolationDebug(const services::adsb::Aircraft& plane,
+                                unsigned long raw_elapsed_ms,
+                                unsigned long extrapolation_elapsed_ms,
+                                float display_lat, float display_lon,
+                                float dist_km) {
+  if (!config::kInterpolationDebugLogEnabled) {
+    return;
+  }
+
+  char key[9] = {};
+  makeAircraftTrackKey(plane, key, sizeof(key));
+  if (!keyMatchesFocusFilter(key)) {
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (s_interp_debug.last_log_ms != 0 &&
+      now - s_interp_debug.last_log_ms < config::kInterpolationDebugLogIntervalMs) {
+    return;
+  }
+  s_interp_debug.last_log_ms = now;
+
+  if (!s_interp_debug.header_printed) {
+    Serial.println(
+        "interpdbg,ms,key,raw_ms,delay_ms,alpha,extrap_ms,dist_km,"
+        "prev_lat,cur_lat,disp_lat,prev_lon,cur_lon,disp_lon,"
+        "gs_knots,track_deg,vr_fpm,prev_alt_ft,cur_alt_ft,disp_alt_ft,jump_m");
+    s_interp_debug.header_printed = true;
+  }
+
+  const unsigned long delay_ms =
+      static_cast<unsigned long>(services::settings::interpolationDelayMs());
+  const float alpha = interpolationBaseBlendAlpha(plane, raw_elapsed_ms);
+  const float prev_lat = plane.has_prev_sample ? plane.prev_lat : plane.lat;
+  const float prev_lon = plane.has_prev_sample ? plane.prev_lon : plane.lon;
+  const float prev_alt_ft =
+      (plane.has_prev_sample && plane.prev_has_altitude) ? plane.prev_altitude_ft : plane.altitude_ft;
+  float disp_alt_ft = NAN;
+  interpolationDisplayAltitudeFt(plane, raw_elapsed_ms, extrapolation_elapsed_ms,
+                                 &disp_alt_ft);
+
+  float jump_m = 0.0f;
+  if (s_interp_debug.has_prev && strcmp(s_interp_debug.key, key) == 0) {
+    const float avg_lat = (display_lat + s_interp_debug.prev_lat) * 0.5f;
+    const float dx_km =
+        (display_lon - s_interp_debug.prev_lon) * lonKmPerDegAtLat(avg_lat);
+    const float dy_km = (display_lat - s_interp_debug.prev_lat) * kKmPerDeg;
+    const float dz_m =
+        std::isfinite(disp_alt_ft)
+            ? (disp_alt_ft - s_interp_debug.prev_alt_ft) * 0.3048f
+            : 0.0f;
+    jump_m = sqrtf(dx_km * dx_km + dy_km * dy_km) * 1000.0f;
+    if (std::isfinite(disp_alt_ft)) {
+      jump_m = sqrtf(jump_m * jump_m + dz_m * dz_m);
+    }
+  }
+
+  Serial.printf(
+      "interpdbg,%lu,%s,%lu,%lu,%.3f,%lu,%.3f,"
+      "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
+      "%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f\n",
+      static_cast<unsigned long>(now), key,
+      static_cast<unsigned long>(raw_elapsed_ms),
+      static_cast<unsigned long>(delay_ms), alpha,
+      static_cast<unsigned long>(extrapolation_elapsed_ms), dist_km, prev_lat,
+      plane.lat, display_lat, prev_lon, plane.lon, display_lon, plane.gs_knots,
+      plane.track_deg, plane.vertical_rate_fpm, prev_alt_ft, plane.altitude_ft,
+      std::isfinite(disp_alt_ft) ? disp_alt_ft : NAN, jump_m);
+
+  strncpy(s_interp_debug.key, key, sizeof(s_interp_debug.key) - 1);
+  s_interp_debug.key[sizeof(s_interp_debug.key) - 1] = '\0';
+  s_interp_debug.prev_lat = display_lat;
+  s_interp_debug.prev_lon = display_lon;
+  s_interp_debug.prev_alt_ft = std::isfinite(disp_alt_ft) ? disp_alt_ft : 0.0f;
+  s_interp_debug.has_prev = true;
 }
 
 void interpolatedLatLon(const services::adsb::Aircraft& plane,
                         unsigned long raw_elapsed_ms,
                         unsigned long extrapolation_elapsed_ms, float* lat,
                         float* lon) {
-  (void)raw_elapsed_ms;
   if (lat == nullptr || lon == nullptr) {
     return;
   }
 
-  *lat = plane.lat;
-  *lon = plane.lon;
-  if (plane.gs_knots <= 0.0f) {
+  const float alpha = interpolationBaseBlendAlpha(plane, raw_elapsed_ms);
+  if (plane.has_prev_sample) {
+    *lat = plane.prev_lat + (plane.lat - plane.prev_lat) * alpha;
+    *lon = plane.prev_lon + (plane.lon - plane.prev_lon) * alpha;
+  } else {
+    *lat = plane.lat;
+    *lon = plane.lon;
+  }
+    const float elapsed_h =
+      (static_cast<float>(extrapolation_elapsed_ms) * kExtrapolationGain) /
+      3600000.0f;
+  if (elapsed_h <= 0.0f) {
     return;
   }
 
-  const float elapsed_h =
-      static_cast<float>(extrapolation_elapsed_ms) / 3600000.0f;
-  const float distance_km = plane.gs_knots * 1.852f * elapsed_h;
-  const float rad = plane.track_deg * kDegToRad;
-  const float dx_km = sinf(rad) * distance_km;
-  const float dy_km = cosf(rad) * distance_km;
+  float vx_kmh = 0.0f;
+  float vy_kmh = 0.0f;
+  if (!estimateMotionKmh(plane, &vx_kmh, &vy_kmh)) {
+    return;
+  }
+
+  const float dx_km = vx_kmh * elapsed_h;
+  const float dy_km = vy_kmh * elapsed_h;
   *lat += dy_km / kKmPerDeg;
-  *lon += dx_km / kKmPerDeg;
+  *lon += dx_km / lonKmPerDegAtLat(*lat);
 }
 
 void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
@@ -327,7 +792,6 @@ void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
                                 unsigned long extrapolation_elapsed_ms,
                                 char* out,
                                 size_t out_len) {
-  (void)raw_elapsed_ms;
   if (out_len == 0) {
     return;
   }
@@ -344,10 +808,17 @@ void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
     return;
   }
 
+  const float alpha = interpolationBaseBlendAlpha(plane, raw_elapsed_ms);
   float altitude_ft = plane.altitude_ft;
+  if (plane.has_prev_sample && plane.prev_has_altitude) {
+    altitude_ft =
+        plane.prev_altitude_ft + (plane.altitude_ft - plane.prev_altitude_ft) * alpha;
+  }
 
-  altitude_ft += plane.vertical_rate_fpm *
-                 (static_cast<float>(extrapolation_elapsed_ms) / 60000.0f);
+  altitude_ft += effectiveVerticalRateFpm(plane) *
+                 ((static_cast<float>(extrapolation_elapsed_ms) *
+                   kExtrapolationGain) /
+                  60000.0f);
   altitude_ft += services::settings::altitudeOffsetFeet();
 
   if (services::units::useImperialDistance()) {
@@ -361,14 +832,21 @@ void formatInterpolatedAltitude(const services::adsb::Aircraft& plane,
 AltitudeTrend altitudeTrendState(const services::adsb::Aircraft& plane,
                                  unsigned long raw_elapsed_ms,
                                  unsigned long extrapolation_elapsed_ms) {
-  (void)raw_elapsed_ms;
   if (plane.on_ground || !plane.has_altitude) {
     return AltitudeTrend::kStable;
   }
 
+  const float alpha = interpolationBaseBlendAlpha(plane, raw_elapsed_ms);
   float current_ft = plane.altitude_ft;
-  current_ft += plane.vertical_rate_fpm *
-                (static_cast<float>(extrapolation_elapsed_ms) / 60000.0f);
+  if (plane.has_prev_sample && plane.prev_has_altitude) {
+    current_ft =
+        plane.prev_altitude_ft + (plane.altitude_ft - plane.prev_altitude_ft) * alpha;
+  }
+  const float vertical_rate_fpm = effectiveVerticalRateFpm(plane);
+  current_ft += vertical_rate_fpm *
+                ((static_cast<float>(extrapolation_elapsed_ms) *
+                  kExtrapolationGain) /
+                 60000.0f);
 
   if (plane.has_prev_sample && plane.prev_has_altitude) {
     const float previous_ft = plane.prev_altitude_ft;
@@ -378,10 +856,10 @@ AltitudeTrend altitudeTrendState(const services::adsb::Aircraft& plane,
     if (relative_change < 0.01f) {
       // Keep 1% stability rule but override when vertical rate is clearly
       // climbing/descending so active changes are not shown as stable.
-      if (plane.vertical_rate_fpm > 200.0f) {
+      if (vertical_rate_fpm > 200.0f) {
         return AltitudeTrend::kUp;
       }
-      if (plane.vertical_rate_fpm < -200.0f) {
+      if (vertical_rate_fpm < -200.0f) {
         return AltitudeTrend::kDown;
       }
       return AltitudeTrend::kStable;
@@ -389,10 +867,10 @@ AltitudeTrend altitudeTrendState(const services::adsb::Aircraft& plane,
     return delta_ft > 0.0f ? AltitudeTrend::kUp : AltitudeTrend::kDown;
   }
 
-  if (plane.vertical_rate_fpm > 50.0f) {
+  if (vertical_rate_fpm > 50.0f) {
     return AltitudeTrend::kUp;
   }
-  if (plane.vertical_rate_fpm < -50.0f) {
+  if (vertical_rate_fpm < -50.0f) {
     return AltitudeTrend::kDown;
   }
   return AltitudeTrend::kStable;
@@ -874,17 +1352,28 @@ void sortBeyondDotsFarFirst(BeyondDotDrawItem* items, size_t count) {
 
 void drawAircraft() {
   initLabelMetrics();
-  syncAircraftScreenTrackDomain();
+  const bool interpolation_enabled =
+      services::settings::adsbInterpolationEnabled();
+  if (interpolation_enabled) {
+    syncAircraftScreenTrackDomain();
+  }
 
   const size_t n = services::adsb::aircraftCount();
   const services::adsb::Aircraft* planes = services::adsb::aircraftList();
+  updateMotionHistoriesIfNeeded(planes, n);
 
   AircraftDrawItem items[services::adsb::kMaxAircraft];
   BeyondDotDrawItem dots[services::adsb::kMaxAircraft];
   char altitude_labels[services::adsb::kMaxAircraft][20] = {};
   uint16_t altitude_colors[services::adsb::kMaxAircraft] = {};
+  float display_lats[services::adsb::kMaxAircraft] = {};
+  float display_lons[services::adsb::kMaxAircraft] = {};
+  float display_dist_km[services::adsb::kMaxAircraft] = {};
   size_t draw_count = 0;
   size_t dot_count = 0;
+  size_t debug_index = services::adsb::kMaxAircraft;
+  float debug_best_dist = 1e9f;
+  bool debug_sticky_found = false;
   const unsigned long raw_elapsed_ms = interpolationRawElapsedMs();
   const unsigned long extrapolation_elapsed_ms =
       interpolationExtrapolationElapsedMs(raw_elapsed_ms);
@@ -894,9 +1383,43 @@ void drawAircraft() {
     float lon = 0.0f;
     interpolatedLatLon(planes[i], raw_elapsed_ms, extrapolation_elapsed_ms,
                        &lat, &lon);
-    formatInterpolatedAltitude(planes[i], raw_elapsed_ms,
-                               extrapolation_elapsed_ms, altitude_labels[i],
+
+    bool has_display_altitude_ft = false;
+    float display_altitude_ft = 0.0f;
+    has_display_altitude_ft = interpolationDisplayAltitudeFt(
+        planes[i], raw_elapsed_ms, extrapolation_elapsed_ms,
+        &display_altitude_ft);
+
+    if (interpolation_enabled) {
+      float filtered_lat = lat;
+      float filtered_lon = lon;
+      bool filtered_has_altitude = has_display_altitude_ft;
+      float filtered_altitude_ft = display_altitude_ft;
+      applyDisplayContinuityFilter(planes[i], lat, lon, has_display_altitude_ft,
+                                   display_altitude_ft, &filtered_lat,
+                                   &filtered_lon, &filtered_has_altitude,
+                                   &filtered_altitude_ft);
+      lat = filtered_lat;
+      lon = filtered_lon;
+
+      if (planes[i].on_ground) {
+        strncpy(altitude_labels[i], "GND", sizeof(altitude_labels[i]) - 1);
+        altitude_labels[i][sizeof(altitude_labels[i]) - 1] = '\0';
+      } else if (filtered_has_altitude) {
+        formatAltitudeFromFeet(filtered_altitude_ft, altitude_labels[i],
                                sizeof(altitude_labels[i]));
+      } else {
+        strncpy(altitude_labels[i], planes[i].alt, sizeof(altitude_labels[i]) - 1);
+        altitude_labels[i][sizeof(altitude_labels[i]) - 1] = '\0';
+      }
+    } else {
+      formatInterpolatedAltitude(planes[i], raw_elapsed_ms,
+                                 extrapolation_elapsed_ms, altitude_labels[i],
+                                 sizeof(altitude_labels[i]));
+    }
+
+    display_lats[i] = lat;
+    display_lons[i] = lon;
     altitude_colors[i] = altitudeTrendColor(
       altitudeTrendState(planes[i], raw_elapsed_ms, extrapolation_elapsed_ms));
 
@@ -904,6 +1427,18 @@ void drawAircraft() {
     float dy_km = 0.0f;
     float dist_km = 0.0f;
     offsetKmFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
+    display_dist_km[i] = dist_km;
+    char debug_key[9] = {};
+    makeAircraftTrackKey(planes[i], debug_key, sizeof(debug_key));
+    if (config::kInterpolationDebugFocusKey[0] == '\0' &&
+        s_interp_debug.has_prev &&
+        strcmp(s_interp_debug.key, debug_key) == 0) {
+      debug_index = i;
+      debug_sticky_found = true;
+    } else if (!debug_sticky_found && dist_km < debug_best_dist) {
+      debug_best_dist = dist_km;
+      debug_index = i;
+    }
 
     if (isInsideOuterRingKm(dist_km)) {
       int target_x = 0;
@@ -911,7 +1446,9 @@ void drawAircraft() {
       latLonToScreen(lat, lon, &target_x, &target_y);
       int x = target_x;
       int y = target_y;
-      smoothAircraftScreenPosition(planes[i], target_x, target_y, &x, &y);
+      if (interpolation_enabled) {
+        smoothAircraftScreenPosition(planes[i], target_x, target_y, &x, &y);
+      }
       items[draw_count].index = i;
       items[draw_count].x = x;
       items[draw_count].y = y;
@@ -950,6 +1487,14 @@ void drawAircraft() {
     const size_t i = items[d].index;
     drawAircraftTag(i, items[d].x, items[d].y, planes[i], altitude_labels[i],
                     altitude_colors[i]);
+  }
+
+  if (debug_index < n) {
+    maybeLogInterpolationDebug(planes[debug_index], raw_elapsed_ms,
+                               extrapolation_elapsed_ms,
+                               display_lats[debug_index],
+                               display_lons[debug_index],
+                               display_dist_km[debug_index]);
   }
 }
 
@@ -1018,6 +1563,11 @@ void resetAircraftScreenTracks() {
   s_aircraft_track_replace_cursor = 0;
 }
 
+void resetAircraftDisplayTracks() {
+  memset(s_aircraft_display_tracks, 0, sizeof(s_aircraft_display_tracks));
+  s_aircraft_display_track_replace_cursor = 0;
+}
+
 void syncAircraftScreenTrackDomain() {
   const uint8_t range_index = radar::rangeIndex();
   const bool use_miles = radar::useMiles();
@@ -1028,6 +1578,7 @@ void syncAircraftScreenTrackDomain() {
   s_aircraft_track_range_index = range_index;
   s_aircraft_track_use_miles = use_miles;
   resetAircraftScreenTracks();
+  resetAircraftDisplayTracks();
 }
 
 void makeAircraftTrackKey(const services::adsb::Aircraft& plane, char* out,
@@ -1076,6 +1627,110 @@ AircraftScreenTrack* findAircraftTrackSlot(const char* key) {
   slot->valid = true;
   slot->has_pos = false;
   return slot;
+}
+
+AircraftDisplayTrack* findAircraftDisplayTrackSlot(const char* key) {
+  if (key == nullptr || key[0] == '\0') {
+    return nullptr;
+  }
+
+  for (auto& track : s_aircraft_display_tracks) {
+    if (track.valid && strcmp(track.key, key) == 0) {
+      return &track;
+    }
+  }
+
+  for (auto& track : s_aircraft_display_tracks) {
+    if (!track.valid) {
+      track = {};
+      track.valid = true;
+      strncpy(track.key, key, sizeof(track.key) - 1);
+      track.key[sizeof(track.key) - 1] = '\0';
+      return &track;
+    }
+  }
+
+  AircraftDisplayTrack* slot =
+      &s_aircraft_display_tracks[s_aircraft_display_track_replace_cursor %
+                                 services::adsb::kMaxAircraft];
+  s_aircraft_display_track_replace_cursor =
+      (s_aircraft_display_track_replace_cursor + 1) % services::adsb::kMaxAircraft;
+  *slot = {};
+  slot->valid = true;
+  strncpy(slot->key, key, sizeof(slot->key) - 1);
+  slot->key[sizeof(slot->key) - 1] = '\0';
+  return slot;
+}
+
+void applyDisplayContinuityFilter(const services::adsb::Aircraft& plane,
+                                  float target_lat, float target_lon,
+                                  bool has_target_altitude,
+                                  float target_altitude_ft, float* out_lat,
+                                  float* out_lon, bool* out_has_altitude,
+                                  float* out_altitude_ft) {
+  if (out_lat == nullptr || out_lon == nullptr || out_has_altitude == nullptr ||
+      out_altitude_ft == nullptr) {
+    return;
+  }
+
+  char key[9] = {};
+  makeAircraftTrackKey(plane, key, sizeof(key));
+  AircraftDisplayTrack* track = findAircraftDisplayTrackSlot(key);
+  if (track == nullptr) {
+    *out_lat = target_lat;
+    *out_lon = target_lon;
+    *out_has_altitude = has_target_altitude;
+    *out_altitude_ft = target_altitude_ft;
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (track->last_ms == 0) {
+    track->lat = target_lat;
+    track->lon = target_lon;
+    track->has_altitude = has_target_altitude;
+    track->altitude_ft = target_altitude_ft;
+    track->last_ms = now;
+  } else {
+    const unsigned long dt_ms = now - track->last_ms;
+    track->last_ms = now;
+    const float dt_s = std::max(0.001f, std::min(0.35f, dt_ms / 1000.0f));
+
+    const float pos_gain =
+        std::max(0.03f, std::min(0.40f, 1.0f - expf(-dt_s / kDisplayPositionTauSec)));
+    track->lat += (target_lat - track->lat) * pos_gain;
+    track->lon += (target_lon - track->lon) * pos_gain;
+
+    if (has_target_altitude) {
+      if (!track->has_altitude) {
+        track->altitude_ft = target_altitude_ft;
+        track->has_altitude = true;
+      } else {
+        const float alt_gain = std::max(
+            0.03f, std::min(0.35f, 1.0f - expf(-dt_s / kDisplayAltitudeTauSec)));
+        track->altitude_ft += (target_altitude_ft - track->altitude_ft) * alt_gain;
+      }
+    } else {
+      track->has_altitude = false;
+    }
+  }
+
+  *out_lat = track->lat;
+  *out_lon = track->lon;
+  *out_has_altitude = track->has_altitude;
+  *out_altitude_ft = track->altitude_ft;
+}
+
+void formatAltitudeFromFeet(float altitude_ft, char* out, size_t out_len) {
+  if (out == nullptr || out_len == 0) {
+    return;
+  }
+  if (services::units::useImperialDistance()) {
+    snprintf(out, out_len, "%d ft", static_cast<int>(lroundf(altitude_ft)));
+    return;
+  }
+  snprintf(out, out_len, "%d m",
+           static_cast<int>(lroundf(altitude_ft * 0.3048f)));
 }
 
 void smoothAircraftScreenPosition(const services::adsb::Aircraft& plane,
