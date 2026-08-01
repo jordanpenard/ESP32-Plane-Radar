@@ -41,6 +41,12 @@ void setPollFn(PollFn fn);
 /** Fetch aircraft within fetch_radius_km of center_lat/lon from adsb.fi. */
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km);
 
+/** True for the duration of fetchUpdate(), including its blocking network
+ * I/O — callers driven via PollFn (e.g. a screen redraw) should skip
+ * expensive work while this is true so it doesn't steal CPU time from the
+ * in-progress socket read. */
+bool fetchInProgress();
+
 /** millis() when the last successful fetchUpdate completed. */
 unsigned long lastFetchUpdateMs();
 

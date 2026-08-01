@@ -138,7 +138,13 @@ void renderRadarIfDue() {
 void onNetworkPoll() {
   wifiLoop();
   if (!g_radar_visible || WiFi.status() != WL_CONNECTED ||
-      services::ota::inProgress()) {
+      services::ota::inProgress() || services::adsb::fetchInProgress()) {
+    // Skip the (relatively expensive) radar redraw while an ADS-B fetch's
+    // own blocking socket read is in progress: this callback is invoked on
+    // every iteration of that read loop, and a ~25fps redraw competing for
+    // CPU time with the read was slow enough to cause the read to time out
+    // mid-body on larger responses. Nothing new to show yet anyway — the
+    // fetch is about to deliver fresher data very shortly.
     return;
   }
   renderRadarIfDue();

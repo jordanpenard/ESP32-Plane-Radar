@@ -325,6 +325,7 @@ Aircraft s_aircraft[kMaxAircraft];
 Aircraft s_previous_aircraft[kMaxAircraft];
 size_t s_aircraft_count = 0;
 PollFn s_poll_fn = nullptr;
+bool s_fetch_in_progress = false;
 unsigned long s_last_fetch_update_ms = 0;
 unsigned long s_last_adsb_tls_skip_ms = 0;
 unsigned long s_last_enrichment_lookup_ms = 0;
@@ -399,7 +400,8 @@ int performGetWithPoll(HTTPClient& http, unsigned long timeout_ms,
 }
 
 bool readResponseBodyWithPoll(HTTPClient& http, String& payload,
-                              unsigned long timeout_ms, bool* out_complete) {
+                              unsigned long timeout_ms, bool* out_complete,
+                              const char* tag) {
   *out_complete = false;
   WiFiClient* stream = http.getStreamPtr();
   if (stream == nullptr) {
@@ -418,6 +420,7 @@ bool readResponseBodyWithPoll(HTTPClient& http, String& payload,
 
   uint8_t buffer[512];
   const unsigned long started_ms = millis();
+  bool timed_out = true;
   while (millis() - started_ms < timeout_ms) {
     pollNetwork();
     const int available = stream->available();
@@ -438,9 +441,11 @@ bool readResponseBodyWithPoll(HTTPClient& http, String& payload,
     if (content_length > 0 &&
         static_cast<int>(payload.length()) >= content_length) {
       *out_complete = true;
+      timed_out = false;
       break;
     }
     if (!http.connected() && stream->available() <= 0) {
+      timed_out = false;
       break;
     }
     delay(1);
@@ -453,6 +458,18 @@ bool readResponseBodyWithPoll(HTTPClient& http, String& payload,
     // connection this correctly means "don't trust it, close and retry
     // fresh" rather than risking a truncated/garbled payload.
     *out_complete = payload.length() > 0 && !http.connected();
+  }
+
+  if (!*out_complete && payload.length() > 0) {
+    // Temporary diagnostics (TWENTY-FIRST issue investigation): pin down
+    // whether "incomplete response" is a real timeout, a missing/mismatched
+    // Content-Length, or the peer closing mid-body.
+    Serial.printf(
+        "%s: incomplete detail len=%u content_length=%d connected=%d "
+        "timed_out=%d elapsed_ms=%lu\n",
+        tag, static_cast<unsigned>(payload.length()), content_length,
+        http.connected() ? 1 : 0, timed_out ? 1 : 0,
+        static_cast<unsigned long>(millis() - started_ms));
   }
 
   return payload.length() > 0;
@@ -867,7 +884,7 @@ bool fetchFlightDataJson(const String& url, const char* callsign,
   bool body_complete = false;
   if (code == HTTP_CODE_OK) {
     readResponseBodyWithPoll(http, payload, config::kFlightLookupTimeoutMs,
-                             &body_complete);
+                             &body_complete, "flight data");
     if (!body_complete) {
       // Don't trust a truncated/ambiguous body, and don't let a corrupted
       // mid-stream state bleed into the next reused request on this
@@ -976,6 +993,17 @@ bool altitudeFilteredOut(const Aircraft& plane) {
 
 void setPollFn(PollFn fn) { s_poll_fn = fn; }
 
+bool fetchInProgress() { return s_fetch_in_progress; }
+
+namespace {
+// Keeps s_fetch_in_progress true for fetchUpdate()'s entire body, including
+// every early-return path, without needing to set it at each return site.
+struct FetchInProgressGuard {
+  FetchInProgressGuard() { s_fetch_in_progress = true; }
+  ~FetchInProgressGuard() { s_fetch_in_progress = false; }
+};
+}  // namespace
+
 size_t aircraftCount() { return s_aircraft_count; }
 
 const Aircraft* aircraftList() { return s_aircraft; }
@@ -1007,6 +1035,12 @@ void releasePersistentConnection() {
 }
 
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
+  // Skips the poll callback's radar redraw for this call's duration (see
+  // main.cpp's onNetworkPoll()) -- a ~25fps redraw competing for CPU with
+  // the blocking socket read was slowing effective read throughput enough
+  // to time out mid-body on larger responses (see repo memory, TWENTY-
+  // SECOND issue).
+  FetchInProgressGuard fetch_guard;
   maybeLogAdsbDiagnostics();
 
   const unsigned long now = millis();
@@ -1082,7 +1116,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   bool body_complete = false;
   const bool got_body =
       readResponseBodyWithPoll(http, payload, kAdsbRequestTimeoutMs,
-                               &body_complete);
+                               &body_complete, "adsb");
   if (!got_body || !body_complete) {
     Serial.println(got_body ? "adsb: incomplete response, dropping connection"
                             : "adsb: empty response");
