@@ -71,6 +71,18 @@ constexpr unsigned long kAdsbFetchIntervalMs = 3000;
 constexpr float kAdsbFetchRadiusScale = 1.0f;
 /** false = hide aircraft with alt_baro "ground"; true = show them too. */
 constexpr bool kAdsbShowGroundAircraft = false;
+/**
+ * Hard ceiling on the radius actually sent to adsb.fi, regardless of the
+ * screen-scaled radius the user's range preset would otherwise request
+ * (25km preset can inflate to ~37km / ~20nm to the screen edge). adsb.fi's
+ * API has no result-count/limit parameter -- distance is the only lever
+ * to bound how many aircraft (and how many bytes) a single fetch can
+ * return. In busy airspace a wide radius can return enough aircraft that
+ * the response no longer reliably downloads within the read timeout at
+ * degraded throughput, and the resulting forced reconnect fragments the
+ * heap enough to break other TLS clients (weather) for extended periods.
+ */
+constexpr float kAdsbMaxFetchRadiusKm = 25.0f;
 
 // --- Flight enrichment (origin/destination and detailed aircraft type) ---
 constexpr char kFlightDataApiBase[] = "https://api.adsbdb.com/v0/";
@@ -114,6 +126,15 @@ constexpr unsigned long kMaintenanceRebootIntervalMs =
  * TLS handshake indefinitely. */
 constexpr size_t kCriticalLargestFreeBlockBytes = 20000;
 constexpr uint16_t kCriticalLargestBlockStreakLimit = 10;
+/** Last-resort self-heal, second trigger: the largest-free-block check
+ * above assumes failures correlate with a very low largest block, but
+ * real hardware has shown mbedTLS handshakes can fail with -32512 for
+ * hours straight while stuck at ~32-33KB (well above 20000) -- a value
+ * that never recovers on its own once reached. Reboot instead once ADS-B
+ * sees this many consecutive real connect failures (~1/60s once the
+ * backoff ladder maxes out, so 10 is roughly 10 minutes), regardless of
+ * what the heap gate reports. */
+constexpr uint8_t kCriticalAdsbConnectFailStreakLimit = 10;
 
 // --- Display auto-dim (night hours use a fixed, dimmer brightness) ---
 constexpr int kAutoDimNightStartHour = 21;  // inclusive, local time

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <HTTPClient.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 
 #include <ArduinoJson.h>
@@ -28,6 +29,12 @@ constexpr float kKmPerNm = 1.852f;
 constexpr float kMetersPerFoot = 0.3048f;
 constexpr int kConnectAttemptMs = 200;
 constexpr unsigned long kAdsbRequestTimeoutMs = 10000;
+// Real hardware logs (strong RSSI, ruling out a weak WiFi link) showed the
+// response body genuinely trickling in at only ~650 B/s under degraded
+// conditions -- an ~11-12KB body needs ~18s at that rate. A separate, more
+// generous budget for just the body-read phase lets a merely-slow transfer
+// finish instead of being truncated and forcing an expensive reconnect.
+constexpr unsigned long kAdsbBodyReadTimeoutMs = 20000;
 constexpr size_t kEnrichmentCacheSize = 48;
 constexpr uint32_t kMinHeapForSslBytes = 54500;
 constexpr uint32_t kMinHeapForLookupSslBytes = 62000;
@@ -42,6 +49,10 @@ constexpr unsigned long kTlsSkipLogIntervalMs = 10000UL;
 constexpr unsigned long kAdsbTlsLowHeapBackoffMs = 5000UL;
 constexpr unsigned long kAdsbTlsFailureBackoffBaseMs = 15000UL;
 constexpr unsigned long kAdsbTlsFailureBackoffMaxMs = 60000UL;
+// adsb.fi's public endpoints are rate-limited to 1 request/second; retrying
+// instantly after a stalled/incomplete read (which already burned most of
+// the request timeout) would otherwise reconnect far faster than that.
+constexpr unsigned long kAdsbIncompleteResponseBackoffMs = 5000UL;
 constexpr unsigned long kAdsbDiagIntervalMs = 30000UL;
 // Sanity cap on HTTP response bodies. A legitimate ADS-B/lookup JSON
 // response never gets close to this size; a Content-Length far beyond it
@@ -229,6 +240,11 @@ bool prepareSecureClient(WiFiClientSecure* client, const char* tag,
   return true;
 }
 
+// Defined further below alongside the other persistent TLS clients; needed
+// here to tell "low largest because ADS-B is actively using it" (fine) apart
+// from "low largest and nothing is even connected" (genuinely fragmented).
+extern WiFiClientSecure s_adsb_client;
+
 void maybeLogAdsbDiagnostics() {
   const unsigned long now = millis();
   if (s_last_adsb_diag_log_ms != 0 &&
@@ -258,7 +274,7 @@ void maybeLogAdsbDiagnostics() {
       "probe{largest=%lu/%lu heap=%lu/%lu} "
       "tls_skip{adsb=%lu[h=%lu l=%lu b=%lu],lookup=%lu[h=%lu l=%lu b=%lu]} "
       "conn_fail{adsb=%lu,lookup=%lu} cool_ms=%lu streak=%u "
-      "tls_conn{reuse=%lu,new=%lu}\n",
+      "tls_conn{reuse=%lu,new=%lu} rssi=%d\n",
       static_cast<unsigned long>(free_heap),
       static_cast<unsigned>(largest_block),
       static_cast<unsigned long>(internal_heap),
@@ -291,27 +307,40 @@ void maybeLogAdsbDiagnostics() {
       static_cast<unsigned long>(s_lookup_connect_fail_count),
       cooldown_remaining_ms, static_cast<unsigned>(s_adsb_connect_fail_streak),
       static_cast<unsigned long>(s_adsb_tls_reuse_count),
-      static_cast<unsigned long>(s_adsb_tls_handshake_count));
+      static_cast<unsigned long>(s_adsb_tls_handshake_count), WiFi.RSSI());
 
   // Last-resort self-heal: the largest free block has been below the
   // critical threshold for many consecutive polls — every TLS handshake
-  // is failing anyway, so reboot rather than keep failing forever.
-  if (largest_block < config::kCriticalLargestFreeBlockBytes) {
+  // is failing anyway, so reboot rather than keep failing forever. Only
+  // count this while ADS-B itself has no active connection: a low value
+  // while it's connected and successfully fetching just reflects that
+  // connection's own buffers legitimately in use, not wasted fragmentation.
+  if (largest_block < config::kCriticalLargestFreeBlockBytes &&
+      !s_adsb_client.connected()) {
     ++s_critical_largest_block_streak;
   } else {
     s_critical_largest_block_streak = 0;
   }
+  // Second self-heal trigger: real hardware has shown -32512 handshake
+  // failures persisting indefinitely while largest_block sits well above
+  // kCriticalLargestFreeBlockBytes (stuck at ~32-33KB, never dipping below
+  // 20000) -- the heap-size gate alone can miss this. Key this one off the
+  // actual observed failure streak instead of a memory-size proxy.
+  const bool connect_fail_critical =
+      s_adsb_connect_fail_streak >= config::kCriticalAdsbConnectFailStreakLimit;
   if (s_critical_largest_block_streak >=
-      config::kCriticalLargestBlockStreakLimit) {
+          config::kCriticalLargestBlockStreakLimit ||
+      connect_fail_critical) {
     if (services::ota::inProgress()) {
       Serial.println(
           "adsb diag: critical heap fragmentation but OTA in progress — "
           "deferring restart");
     } else {
       Serial.printf(
-          "adsb diag: critical heap fragmentation for %u consecutive "
-          "polls (largest=%u) — restarting\n",
+          "adsb diag: critical heap fragmentation (largest_streak=%u "
+          "connect_fail_streak=%u largest=%u) — restarting\n",
           static_cast<unsigned>(s_critical_largest_block_streak),
+          static_cast<unsigned>(s_adsb_connect_fail_streak),
           static_cast<unsigned>(largest_block));
       delay(200);
       esp_restart();
@@ -461,15 +490,17 @@ bool readResponseBodyWithPoll(HTTPClient& http, String& payload,
   }
 
   if (!*out_complete && payload.length() > 0) {
-    // Temporary diagnostics (TWENTY-FIRST issue investigation): pin down
-    // whether "incomplete response" is a real timeout, a missing/mismatched
-    // Content-Length, or the peer closing mid-body.
+    // Temporary diagnostics (TWENTY-FIRST/TWENTY-SECOND issue investigation):
+    // pin down whether "incomplete response" is a real timeout, a
+    // missing/mismatched Content-Length, or the peer closing mid-body, and
+    // whether it correlates with a weak WiFi signal (adsb.fi is a remote
+    // WAN endpoint, not LAN, so link quality to the router matters here).
     Serial.printf(
         "%s: incomplete detail len=%u content_length=%d connected=%d "
-        "timed_out=%d elapsed_ms=%lu\n",
+        "timed_out=%d elapsed_ms=%lu rssi=%d\n",
         tag, static_cast<unsigned>(payload.length()), content_length,
         http.connected() ? 1 : 0, timed_out ? 1 : 0,
-        static_cast<unsigned long>(millis() - started_ms));
+        static_cast<unsigned long>(millis() - started_ms), WiFi.RSSI());
   }
 
   return payload.length() > 0;
@@ -1057,7 +1088,13 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
 
   s_last_center_lat = center_lat;
   s_last_center_lon = center_lon;
-  const float dist_nm = kmToNauticalMiles(fetch_radius_km);
+  // Cap the radius actually queried, independent of the (screen-scaled)
+  // radius the caller asks for -- see config::kAdsbMaxFetchRadiusKm.
+  const float capped_fetch_radius_km =
+      fetch_radius_km > config::kAdsbMaxFetchRadiusKm
+          ? config::kAdsbMaxFetchRadiusKm
+          : fetch_radius_km;
+  const float dist_nm = kmToNauticalMiles(capped_fetch_radius_km);
 
   String url = kApiBase;
   url += String(center_lat, 6);
@@ -1115,7 +1152,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   String payload;
   bool body_complete = false;
   const bool got_body =
-      readResponseBodyWithPoll(http, payload, kAdsbRequestTimeoutMs,
+      readResponseBodyWithPoll(http, payload, kAdsbBodyReadTimeoutMs,
                                &body_complete, "adsb");
   if (!got_body || !body_complete) {
     Serial.println(got_body ? "adsb: incomplete response, dropping connection"
@@ -1125,6 +1162,10 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     // can no longer be trusted for the next reused request.
     client.stop();
     http.end();
+    // Use a fresh millis() here, not the stale `now` captured at function
+    // entry -- the request/read above can itself take up to the full
+    // ~10s timeout, so `now` may already be that old.
+    s_adsb_tls_cooldown_until_ms = millis() + kAdsbIncompleteResponseBackoffMs;
     return false;
   }
   http.end();
