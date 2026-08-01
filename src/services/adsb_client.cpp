@@ -1116,6 +1116,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   filter_ac["alt_geom"] = true;
   filter_ac["hex"] = true;
   filter_ac["flight"] = true;
+  filter_ac["t"] = true;  // basic aircraft type code, tag's fallback model line
 
   JsonDocument doc;
   const DeserializationError err =
