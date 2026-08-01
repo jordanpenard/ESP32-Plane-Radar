@@ -35,6 +35,8 @@ uint16_t kColorTagAltitude = 0xFFE0;
 uint16_t kColorRunway = 0x4D5F;
 uint16_t kColorRunwayLabel = 0x7DFF;
 uint16_t kColorFooterBackground = 0x0084;
+uint16_t kColorWeatherFixTimeStale = 0xF800;
+uint16_t kColorAdsbFixTime = 0x2648;
 
 }  // namespace radar
 
@@ -70,11 +72,15 @@ bool s_cached_scale_use_miles = false;
 
 char s_cached_weather_line[32] = {};
 char s_cached_date_time[20] = {};
+uint16_t s_cached_weather_line_color = 0;
+uint16_t s_cached_date_time_color = 0;
 bool s_cached_footer_valid = false;
 unsigned long s_cached_footer_ms = 0;
 bool s_cached_footer_weather_enabled = false;
 bool s_cached_footer_show_seconds = false;
 unsigned long s_cached_footer_delay_ms = 0;
+bool s_cached_footer_show_last_fix = false;
+bool s_cached_footer_show_adsb_time = false;
 
 int s_cached_tag_block_width[services::adsb::kMaxAircraft] = {};
 uint32_t s_cached_tag_block_hash[services::adsb::kMaxAircraft] = {};
@@ -302,6 +308,13 @@ void initPalette() {
                                           scale(radar::kRunwayLabelB));
   radar::kColorFooterBackground = tft.color565(
       scale(radar::kFooterBgR), scale(radar::kFooterBgG), scale(radar::kFooterBgB));
+  radar::kColorWeatherFixTimeStale =
+      tft.color565(scale(radar::kWeatherFixTimeStaleR),
+                   scale(radar::kWeatherFixTimeStaleG),
+                   scale(radar::kWeatherFixTimeStaleB));
+  radar::kColorAdsbFixTime = tft.color565(scale(radar::kAdsbFixTimeR),
+                                          scale(radar::kAdsbFixTimeG),
+                                          scale(radar::kAdsbFixTimeB));
 }
 
 constexpr float kKmPerDeg = 111.0f;
@@ -1320,14 +1333,13 @@ void drawFooter() {
 
   if (services::settings::weatherEnabled()) {
     drawFooterLine(s_cached_weather_line, radar::kFooterWeatherY, 176,
-                   radar::kColorTagType);
+                   s_cached_weather_line_color);
   }
 
   const int time_y = services::settings::weatherEnabled()
                          ? radar::kFooterTimeY
                          : radar::kFooterTimeOnlyY;
-  drawFooterLine(s_cached_date_time, time_y, 128,
-                 radar::kColorTagAltitude);
+  drawFooterLine(s_cached_date_time, time_y, 128, s_cached_date_time_color);
 }
 
 struct AircraftDrawItem {
@@ -1802,23 +1814,65 @@ void updateFooterCacheIfNeeded() {
       services::settings::clockFollowsInterpolationDelay()
         ? static_cast<unsigned long>(services::settings::interpolationDelayMs())
         : 0UL;
+  // Flash the last successful weather fetch's date/time in place of the
+  // weather line for 1 out of every 10 seconds, when enabled.
+  const bool show_last_fix = weather_enabled &&
+      services::settings::showLastWeatherFixTime() &&
+      services::weather::hasLastFix() && (now % 10000UL) < 1000UL;
+  // Replace the live clock with the last successful ADS-B fetch's date/time
+  // (in green), when enabled.
+  const bool show_adsb_time = services::settings::showLastAdsbFetchTime() &&
+      services::adsb::lastFetchUpdateMs() != 0;
   if (s_cached_footer_valid &&
       s_cached_footer_weather_enabled == weather_enabled &&
       s_cached_footer_show_seconds == show_seconds &&
       s_cached_footer_delay_ms == display_delay_ms &&
+      s_cached_footer_show_last_fix == show_last_fix &&
+      s_cached_footer_show_adsb_time == show_adsb_time &&
       now - s_cached_footer_ms < 1000UL) {
     return;
   }
 
   if (weather_enabled) {
-    services::weather::formatWeatherLine(s_cached_weather_line,
-                                         sizeof(s_cached_weather_line), 176);
+    if (show_last_fix) {
+      services::weather::formatLastFixDateTimeLine(
+          s_cached_weather_line, sizeof(s_cached_weather_line), show_seconds);
+      const bool fix_fresh =
+          services::weather::valid() && !services::weather::stale() &&
+          services::weather::lastSuccessAgeSec() <
+              config::kWeatherFetchIntervalMs / 1000UL;
+      s_cached_weather_line_color = fix_fresh
+                                        ? radar::kColorTagType
+                                        : radar::kColorWeatherFixTimeStale;
+    } else {
+      services::weather::formatWeatherLine(s_cached_weather_line,
+                                           sizeof(s_cached_weather_line), 176);
+      s_cached_weather_line_color = radar::kColorTagType;
+    }
   } else {
     s_cached_weather_line[0] = '\0';
   }
 
   char with_seconds[24] = {};
-  if (show_seconds) {
+  if (show_adsb_time) {
+    const unsigned long adsb_fix_ms = services::adsb::lastFetchUpdateMs();
+    if (show_seconds) {
+      services::weather::formatDateTimeAtMillis(
+          adsb_fix_ms, with_seconds, sizeof(with_seconds), true);
+      applyFooterStyle();
+      if (s_draw->textWidth(with_seconds) <= 128) {
+        strncpy(s_cached_date_time, with_seconds, sizeof(s_cached_date_time) - 1);
+        s_cached_date_time[sizeof(s_cached_date_time) - 1] = '\0';
+      } else {
+        services::weather::formatDateTimeAtMillis(
+            adsb_fix_ms, s_cached_date_time, sizeof(s_cached_date_time), false);
+      }
+    } else {
+      services::weather::formatDateTimeAtMillis(
+          adsb_fix_ms, s_cached_date_time, sizeof(s_cached_date_time), false);
+    }
+    s_cached_date_time_color = radar::kColorAdsbFixTime;
+  } else if (show_seconds) {
     services::weather::formatDateTimeLine(with_seconds, sizeof(with_seconds),
                                           true, display_delay_ms);
     applyFooterStyle();
@@ -1830,15 +1884,19 @@ void updateFooterCacheIfNeeded() {
                                             sizeof(s_cached_date_time), false,
                                             display_delay_ms);
     }
+    s_cached_date_time_color = radar::kColorTagAltitude;
   } else {
     services::weather::formatDateTimeLine(s_cached_date_time,
                                           sizeof(s_cached_date_time), false,
                                           display_delay_ms);
+    s_cached_date_time_color = radar::kColorTagAltitude;
   }
   s_cached_footer_valid = true;
   s_cached_footer_weather_enabled = weather_enabled;
   s_cached_footer_show_seconds = show_seconds;
   s_cached_footer_delay_ms = display_delay_ms;
+  s_cached_footer_show_last_fix = show_last_fix;
+  s_cached_footer_show_adsb_time = show_adsb_time;
   s_cached_footer_ms = now;
 }
 

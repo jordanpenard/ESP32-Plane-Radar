@@ -32,6 +32,12 @@ int interpolationDelayMs();
 bool clockFollowsInterpolationDelay();
 bool use24HourClock();
 bool showTimeSeconds();
+/** When on, the weather line periodically shows the last successful weather
+ * fetch's date/time (in blue) instead of the current conditions. */
+bool showLastWeatherFixTime();
+/** When on, the clock line shows the last successful ADS-B fetch's date/time
+ * (in green) instead of the live clock. */
+bool showLastAdsbFetchTime();
 int textScalePercent();
 /** When on, the display uses config::kAutoDimNightBrightnessPercent during
  * night hours (config::kAutoDimNightStartHour..kAutoDimNightEndHour local
@@ -58,6 +64,8 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* clock24_checkbox,
                     const char* time_seconds_checkbox,
                     const char* clock_follow_interp_checkbox,
+                    const char* last_weather_fix_time_checkbox,
+                    const char* last_adsb_fetch_time_checkbox,
                     const char* text_scale_percent_value,
                     const char* auto_dim_checkbox,
                     const char* brightness_percent_value,

@@ -52,6 +52,7 @@ char s_last_error[32] = "none";
 double s_last_latitude = 999.0;
 double s_last_longitude = 999.0;
 PollFn s_poll_fn = nullptr;
+bool s_fetch_in_progress = false;
 
 // Persistent across attempts/cycles for the same reason ADS-B's clients are
 // (see adsb_client.cpp): a fresh WiFiClientSecure+HTTPClient pair every
@@ -284,6 +285,15 @@ bool fetchOnce(const String& url, int attempt, int max_attempts) {
 }
 
 bool fetch(double latitude, double longitude) {
+  // Skips the poll callback's radar redraw for this call's duration (see
+  // main.cpp's onNetworkPoll() and adsb_client.cpp's matching guard) -- a
+  // competing redraw during weather's own TLS handshake/retries can slow it
+  // enough to tip an already-marginal handshake into failure.
+  struct FetchInProgressGuard {
+    FetchInProgressGuard() { s_fetch_in_progress = true; }
+    ~FetchInProgressGuard() { s_fetch_in_progress = false; }
+  } fetch_guard;
+
   String url = config::kWeatherApiBase;
   url += "?latitude=";
   url += String(latitude, 6);
@@ -337,6 +347,8 @@ void begin() {
 }
 
 void setPollFn(PollFn fn) { s_poll_fn = fn; }
+
+bool fetchInProgress() { return s_fetch_in_progress; }
 
 bool refreshIfDue(double latitude, double longitude, bool force) {
   begin();
@@ -412,6 +424,23 @@ void formatWeatherLine(char* out, size_t out_len, int max_width) {
            s_stale ? " STALE" : "");
 }
 
+void formatLocalDateTime(time_t utc_time, bool include_seconds, char* out,
+                         size_t out_len) {
+  const time_t local_now = utc_time + s_utc_offset_seconds;
+  tm local = {};
+  gmtime_r(&local_now, &local);
+  const int year = local.tm_year + 1900;
+  const int month = local.tm_mon + 1;
+  const int day = local.tm_mday;
+  if (include_seconds) {
+    snprintf(out, out_len, "%04d-%02d-%02d %02d:%02d:%02d", year, month, day,
+             local.tm_hour, local.tm_min, local.tm_sec);
+    return;
+  }
+  snprintf(out, out_len, "%04d-%02d-%02d %02d:%02d", year, month, day,
+           local.tm_hour, local.tm_min);
+}
+
 void formatDateTimeLine(char* out, size_t out_len, bool include_seconds,
                         unsigned long display_delay_ms) {
   if (out_len == 0) {
@@ -427,19 +456,32 @@ void formatDateTimeLine(char* out, size_t out_len, bool include_seconds,
 
   const time_t delayed_utc_now = utc_now -
                                  static_cast<time_t>(display_delay_ms / 1000UL);
-  const time_t local_now = delayed_utc_now + s_utc_offset_seconds;
-  tm local = {};
-  gmtime_r(&local_now, &local);
-  const int year = local.tm_year + 1900;
-  const int month = local.tm_mon + 1;
-  const int day = local.tm_mday;
-  if (include_seconds) {
-    snprintf(out, out_len, "%04d-%02d-%02d %02d:%02d:%02d", year, month, day,
-             local.tm_hour, local.tm_min, local.tm_sec);
+  formatLocalDateTime(delayed_utc_now, include_seconds, out, out_len);
+}
+
+bool hasLastFix() { return s_last_success_ms != 0; }
+
+void formatDateTimeAtMillis(unsigned long event_ms, char* out, size_t out_len,
+                           bool include_seconds) {
+  if (out_len == 0) {
     return;
   }
-  snprintf(out, out_len, "%04d-%02d-%02d %02d:%02d", year, month, day,
-           local.tm_hour, local.tm_min);
+
+  const time_t utc_now = time(nullptr);
+  if (utc_now < kMinimumValidEpoch || event_ms == 0) {
+    snprintf(out, out_len, include_seconds ? "---- -- --:--:--"
+                                           : "---- -- --:--");
+    return;
+  }
+
+  const unsigned long age_sec = (millis() - event_ms) / 1000UL;
+  const time_t event_utc = utc_now - static_cast<time_t>(age_sec);
+  formatLocalDateTime(event_utc, include_seconds, out, out_len);
+}
+
+void formatLastFixDateTimeLine(char* out, size_t out_len,
+                               bool include_seconds) {
+  formatDateTimeAtMillis(s_last_success_ms, out, out_len, include_seconds);
 }
 
 int currentLocalHour() {

@@ -233,6 +233,23 @@ WiFiManagerParameter s_param_fahrenheit(
     s_fahrenheit_checkbox_attrs, WFM_LABEL_AFTER);
 WiFiManagerParameter s_break_fahrenheit("<br/>");
 
+char s_weather_fix_time_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_weather_fix_time(
+    "wx_fix_time", "Flash last weather update time", "T", 2,
+    s_weather_fix_time_checkbox_attrs, WFM_LABEL_AFTER);
+WiFiManagerParameter s_hint_weather_fix_time(
+    "<small class=\"pr-hint\">Shows the last successful weather update's "
+    "date/time in blue, in place of the weather line, for 1 out of every "
+    "10 seconds.</small>");
+
+char s_adsb_fix_time_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_adsb_fix_time(
+    "adsb_fix_time", "Show last ADS-B update time", "T", 2,
+    s_adsb_fix_time_checkbox_attrs, WFM_LABEL_AFTER);
+WiFiManagerParameter s_hint_adsb_fix_time(
+    "<small class=\"pr-hint\">Replaces the live clock with the last "
+    "successful ADS-B update's date/time, in green.</small>");
+
 WiFiManagerParameter s_param_altitude_offset(
   "alt_offset", "Altitude offset (same unit as Display distances)", "0", kAltitudeOffsetParamLen,
     kAltitudeOffsetInputAttrs);
@@ -502,6 +519,14 @@ void refreshPortalParamDefaults() {
                        sizeof(s_fahrenheit_checkbox_attrs),
                        services::settings::temperatureFahrenheit());
   s_param_fahrenheit.setValue("T", 2);
+  refreshCheckboxAttrs(s_weather_fix_time_checkbox_attrs,
+                       sizeof(s_weather_fix_time_checkbox_attrs),
+                       services::settings::showLastWeatherFixTime());
+  s_param_weather_fix_time.setValue("T", 2);
+  refreshCheckboxAttrs(s_adsb_fix_time_checkbox_attrs,
+                       sizeof(s_adsb_fix_time_checkbox_attrs),
+                       services::settings::showLastAdsbFetchTime());
+  s_param_adsb_fix_time.setValue("T", 2);
   char altitude_offset_buf[kAltitudeOffsetParamLen + 1];
   const float altitude_offset = services::units::useImperialDistance()
                                     ? services::settings::altitudeOffsetFeet()
@@ -582,6 +607,8 @@ void onPortalParamsSaved() {
       s_param_clock24.getValue(),
       s_param_time_seconds.getValue(),
       s_param_clock_follow_interp.getValue(),
+      s_param_weather_fix_time.getValue(),
+      s_param_adsb_fix_time.getValue(),
       s_param_text_scale.getValue(),
       s_param_auto_dim.getValue(),
       s_param_brightness.getValue(),
@@ -606,6 +633,8 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String clock24 = web.arg("clock_24");
   const String time_seconds = web.arg("time_seconds");
   const String clock_follow_interp = web.arg("clock_follow_interp");
+  const String weather_fix_time = web.arg("wx_fix_time");
+  const String adsb_fix_time = web.arg("adsb_fix_time");
   const String text_scale = web.arg("text_scale");
   const String auto_dim = web.arg("auto_dim");
   const String brightness_pct = web.arg("brightness_pct");
@@ -627,6 +656,8 @@ void savePortalParamsFromRequest(WebServer& web) {
       interpolation_delay_ms.c_str(), clock24.c_str(),
       time_seconds.c_str(),
       clock_follow_interp.c_str(),
+      weather_fix_time.c_str(),
+      adsb_fix_time.c_str(),
       text_scale.c_str(), auto_dim.c_str(), brightness_pct.c_str(),
       ota_password.c_str());
   refreshPortalParamDefaults();
@@ -740,6 +771,10 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_param_weather);
   wm.addParameter(&s_param_fahrenheit);
   wm.addParameter(&s_break_fahrenheit);
+  wm.addParameter(&s_param_weather_fix_time);
+  wm.addParameter(&s_hint_weather_fix_time);
+  wm.addParameter(&s_param_adsb_fix_time);
+  wm.addParameter(&s_hint_adsb_fix_time);
   wm.addParameter(&s_param_text_scale);
   wm.addParameter(&s_param_text_scale_output);
   wm.addParameter(&s_param_auto_dim);

@@ -99,6 +99,12 @@ constexpr uint8_t kRunwayLabelB = 230;
 constexpr uint8_t kFooterBgR = 3;
 constexpr uint8_t kFooterBgG = 16;
 constexpr uint8_t kFooterBgB = 32;
+constexpr uint8_t kWeatherFixTimeStaleR = 255;
+constexpr uint8_t kWeatherFixTimeStaleG = 60;
+constexpr uint8_t kWeatherFixTimeStaleB = 60;
+constexpr uint8_t kAdsbFixTimeR = 40;
+constexpr uint8_t kAdsbFixTimeG = 220;
+constexpr uint8_t kAdsbFixTimeB = 90;
 
 extern uint16_t kColorBackground;
 extern uint16_t kColorGrid;
@@ -111,5 +117,7 @@ extern uint16_t kColorTagAltitude;
 extern uint16_t kColorRunway;
 extern uint16_t kColorRunwayLabel;
 extern uint16_t kColorFooterBackground;
+extern uint16_t kColorWeatherFixTimeStale;
+extern uint16_t kColorAdsbFixTime;
 
 }  // namespace ui::radar

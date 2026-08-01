@@ -25,6 +25,8 @@ constexpr char kKeyInterpolationDelayMs[] = "interpDly";
 constexpr char kKeyClockFollowInterp[] = "clkIntrp";
 constexpr char kKeyClock24[] = "time24";
 constexpr char kKeyTimeSeconds[] = "timeSec";
+constexpr char kKeyLastWeatherFixTime[] = "wxFixTime";
+constexpr char kKeyLastAdsbFetchTime[] = "adsbFixTime";
 constexpr char kKeyTextScale[] = "fontPct";
 constexpr char kKeyOtaPassword[] = "otaPass";
 constexpr char kKeyAutoDim[] = "autoDim";
@@ -42,6 +44,8 @@ float s_altitude_filter_threshold_feet = 0.0f;
 bool s_adsb_interpolation_enabled = true;
 bool s_use_24_hour_clock = true;
 bool s_show_time_seconds = false;
+bool s_show_last_weather_fix_time = false;
+bool s_show_last_adsb_fetch_time = false;
 int s_text_scale_percent = kTextScaleDefaultPercent;
 int s_interpolation_delay_ms = kInterpolationDelayDefaultMs;
 bool s_clock_follows_interpolation_delay = true;
@@ -216,6 +220,8 @@ void loadDefaults() {
   s_adsb_interpolation_enabled = true;
   s_use_24_hour_clock = true;
   s_show_time_seconds = false;
+  s_show_last_weather_fix_time = false;
+  s_show_last_adsb_fetch_time = false;
   s_text_scale_percent = kTextScaleDefaultPercent;
   s_interpolation_delay_ms = kInterpolationDelayDefaultMs;
   s_clock_follows_interpolation_delay = true;
@@ -240,6 +246,8 @@ void persist() {
   prefs.putBool(kKeyAdsbInterpolation, s_adsb_interpolation_enabled);
   prefs.putBool(kKeyClock24, s_use_24_hour_clock);
   prefs.putBool(kKeyTimeSeconds, s_show_time_seconds);
+  prefs.putBool(kKeyLastWeatherFixTime, s_show_last_weather_fix_time);
+  prefs.putBool(kKeyLastAdsbFetchTime, s_show_last_adsb_fetch_time);
   prefs.putInt(kKeyTextScale, s_text_scale_percent);
   prefs.putInt(kKeyInterpolationDelayMs, s_interpolation_delay_ms);
   prefs.putBool(kKeyClockFollowInterp, s_clock_follows_interpolation_delay);
@@ -271,6 +279,10 @@ void init() {
   s_adsb_interpolation_enabled = prefs.getBool(kKeyAdsbInterpolation, true);
   s_use_24_hour_clock = prefs.getBool(kKeyClock24, true);
   s_show_time_seconds = prefs.getBool(kKeyTimeSeconds, false);
+  s_show_last_weather_fix_time =
+      prefs.getBool(kKeyLastWeatherFixTime, false);
+  s_show_last_adsb_fetch_time =
+      prefs.getBool(kKeyLastAdsbFetchTime, false);
   s_text_scale_percent = clampTextScalePercent(
       prefs.getInt(kKeyTextScale, kTextScaleDefaultPercent));
   s_interpolation_delay_ms = clampInterpolationDelayMs(
@@ -324,6 +336,10 @@ bool use24HourClock() { return s_use_24_hour_clock; }
 
 bool showTimeSeconds() { return s_show_time_seconds; }
 
+bool showLastWeatherFixTime() { return s_show_last_weather_fix_time; }
+
+bool showLastAdsbFetchTime() { return s_show_last_adsb_fetch_time; }
+
 int textScalePercent() { return s_text_scale_percent; }
 
 bool autoDimEnabled() { return s_auto_dim_enabled; }
@@ -344,6 +360,8 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* clock24_checkbox,
                     const char* time_seconds_checkbox,
                     const char* clock_follow_interp_checkbox,
+                    const char* last_weather_fix_time_checkbox,
+                    const char* last_adsb_fetch_time_checkbox,
                     const char* text_scale_percent_value,
                     const char* auto_dim_checkbox,
                     const char* brightness_percent_value,
@@ -368,6 +386,10 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
   s_show_time_seconds = checkboxChecked(time_seconds_checkbox);
   s_clock_follows_interpolation_delay =
       checkboxChecked(clock_follow_interp_checkbox);
+  s_show_last_weather_fix_time =
+      checkboxChecked(last_weather_fix_time_checkbox);
+  s_show_last_adsb_fetch_time =
+      checkboxChecked(last_adsb_fetch_time_checkbox);
   int text_scale_percent = s_text_scale_percent;
   if (parseTextScalePercent(text_scale_percent_value, &text_scale_percent)) {
     s_text_scale_percent = text_scale_percent;
