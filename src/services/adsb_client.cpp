@@ -11,9 +11,11 @@
 #include <cstring>
 
 #include <esp_heap_caps.h>
+#include <esp_task_wdt.h>
 
 #include "config.h"
 #include "services/display_settings.h"
+#include "services/ota_update.h"
 #include "services/unit_policy.h"
 #include "ui/radar_range.h"
 
@@ -61,6 +63,7 @@ uint32_t s_lookup_skip_low_both_count = 0;
 uint32_t s_lookup_connect_fail_count = 0;
 uint32_t s_adsb_connect_fail_count = 0;
 uint8_t s_adsb_connect_fail_streak = 0;
+uint16_t s_critical_largest_block_streak = 0;
 unsigned long s_adsb_tls_cooldown_until_ms = 0;
 unsigned long s_last_adsb_low_largest_probe_ms = 0;
 unsigned long s_last_adsb_low_heap_probe_ms = 0;
@@ -290,6 +293,31 @@ void maybeLogAdsbDiagnostics() {
       static_cast<unsigned long>(s_adsb_tls_reuse_count),
       static_cast<unsigned long>(s_adsb_tls_handshake_count));
 
+  // Last-resort self-heal: the largest free block has been below the
+  // critical threshold for many consecutive polls — every TLS handshake
+  // is failing anyway, so reboot rather than keep failing forever.
+  if (largest_block < config::kCriticalLargestFreeBlockBytes) {
+    ++s_critical_largest_block_streak;
+  } else {
+    s_critical_largest_block_streak = 0;
+  }
+  if (s_critical_largest_block_streak >=
+      config::kCriticalLargestBlockStreakLimit) {
+    if (services::ota::inProgress()) {
+      Serial.println(
+          "adsb diag: critical heap fragmentation but OTA in progress — "
+          "deferring restart");
+    } else {
+      Serial.printf(
+          "adsb diag: critical heap fragmentation for %u consecutive "
+          "polls (largest=%u) — restarting\n",
+          static_cast<unsigned>(s_critical_largest_block_streak),
+          static_cast<unsigned>(largest_block));
+      delay(200);
+      esp_restart();
+    }
+  }
+
   resetDiagWindow();
 }
 
@@ -329,6 +357,7 @@ WiFiClientSecure s_lookup_client;
 HTTPClient s_lookup_http;
 
 void pollNetwork() {
+  esp_task_wdt_reset();
   if (s_poll_fn != nullptr) {
     s_poll_fn();
   }

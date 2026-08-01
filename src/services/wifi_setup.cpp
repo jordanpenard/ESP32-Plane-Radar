@@ -12,6 +12,7 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
 #include <esp_wifi.h>
 
 #ifdef WM_MDNS
@@ -354,6 +355,28 @@ WiFiManagerParameter s_param_text_scale_output(
     "o=document.getElementById('text_scale_value');"
     "if(s&&o)o.value=s.value+'%';})();</script>");
 
+char s_auto_dim_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_auto_dim(
+    "auto_dim", "Auto-dim at night", "T", 2, s_auto_dim_checkbox_attrs,
+    WFM_LABEL_AFTER);
+WiFiManagerParameter s_hint_auto_dim(
+    "<small class=\"pr-hint\">Dims the display automatically between "
+    "9 PM and 7 AM local time.</small>");
+constexpr int kBrightnessParamLen = 4;
+constexpr char kBrightnessAttrs[] =
+    "type=\"range\" min=\"20\" max=\"100\" step=\"5\" "
+    "oninput=\"document.getElementById('brightness_pct_value').value="
+    "this.value+'%'\"";
+WiFiManagerParameter s_param_brightness(
+    "brightness_pct", "Brightness", "100", kBrightnessParamLen,
+    kBrightnessAttrs);
+WiFiManagerParameter s_param_brightness_output(
+    "<div style=\"text-align:center;margin-top:-5px\">"
+    "<output id=\"brightness_pct_value\" for=\"brightness_pct\"></output></div>"
+    "<script>(function(){var s=document.getElementById('brightness_pct'),"
+    "o=document.getElementById('brightness_pct_value');"
+    "if(s&&o)o.value=s.value+'%';})();</script>");
+
 constexpr char kOtaPasswordAttrs[] =
     "type=\"password\" autocomplete=\"new-password\" "
     "placeholder=\"leave blank to keep current\"";
@@ -528,6 +551,14 @@ void refreshPortalParamDefaults() {
   snprintf(text_scale_buf, sizeof(text_scale_buf), "%d",
            services::settings::textScalePercent());
   s_param_text_scale.setValue(text_scale_buf, kTextScaleParamLen);
+  refreshCheckboxAttrs(s_auto_dim_checkbox_attrs,
+                       sizeof(s_auto_dim_checkbox_attrs),
+                       services::settings::autoDimEnabled());
+  s_param_auto_dim.setValue("T", 2);
+  char brightness_buf[kBrightnessParamLen + 1];
+  snprintf(brightness_buf, sizeof(brightness_buf), "%d",
+           services::settings::brightnessPercent());
+  s_param_brightness.setValue(brightness_buf, kBrightnessParamLen);
   s_param_ota_password.setValue("", kOtaPasswordParamLen);
 }
 
@@ -552,6 +583,8 @@ void onPortalParamsSaved() {
       s_param_time_seconds.getValue(),
       s_param_clock_follow_interp.getValue(),
       s_param_text_scale.getValue(),
+      s_param_auto_dim.getValue(),
+      s_param_brightness.getValue(),
       s_param_ota_password.getValue());
 }
 
@@ -574,6 +607,8 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String time_seconds = web.arg("time_seconds");
   const String clock_follow_interp = web.arg("clock_follow_interp");
   const String text_scale = web.arg("text_scale");
+  const String auto_dim = web.arg("auto_dim");
+  const String brightness_pct = web.arg("brightness_pct");
   const String ota_password = web.arg("ota_password");
 
   if (!services::location::saveFromStrings(latitude.c_str(),
@@ -592,7 +627,8 @@ void savePortalParamsFromRequest(WebServer& web) {
       interpolation_delay_ms.c_str(), clock24.c_str(),
       time_seconds.c_str(),
       clock_follow_interp.c_str(),
-      text_scale.c_str(), ota_password.c_str());
+      text_scale.c_str(), auto_dim.c_str(), brightness_pct.c_str(),
+      ota_password.c_str());
   refreshPortalParamDefaults();
 }
 
@@ -706,6 +742,10 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_break_fahrenheit);
   wm.addParameter(&s_param_text_scale);
   wm.addParameter(&s_param_text_scale_output);
+  wm.addParameter(&s_param_auto_dim);
+  wm.addParameter(&s_hint_auto_dim);
+  wm.addParameter(&s_param_brightness);
+  wm.addParameter(&s_param_brightness_output);
 
   wm.addParameter(&s_section_clock);
   wm.addParameter(&s_param_clock24);
@@ -899,6 +939,7 @@ void startStaConnect(const String& ssid, const String& pass) {
 bool waitForLinkWithUi(const char* ssid_for_ui, unsigned long attempt_ms) {
   const unsigned long deadline = millis() + attempt_ms;
   while (millis() < deadline) {
+    esp_task_wdt_reset();
     if (wifiLinkUp()) {
       return true;
     }
@@ -961,6 +1002,7 @@ bool openConfigPortal() {
   s_wm.setConfigPortalBlocking(false);
   s_wm.startConfigPortal(config::kPortalApName);
   while (s_wm.getConfigPortalActive()) {
+    esp_task_wdt_reset();
     bootButtonPollLongPress();
     if (s_wm.process()) {
       return true;
@@ -1088,8 +1130,28 @@ void wifiToggleLanPortal() {
     Serial.println("LAN portal: enabled (hold BOOT again to disable)");
     startLanWebPortal();
   } else {
+    // WiFiManager's web server permanently fragments the largest
+    // contiguous heap block for the rest of the boot session once it has
+    // actually been started — stopWebPortal()/MDNS.end() never reclaim it
+    // (confirmed on hardware repeatedly: ADS-B's TLS handshake keeps
+    // failing with -32512 long after the portal is closed). This happens
+    // even when mDNS was never used/attempted at all (a boot-auto-window
+    // session, opened without mDNS, that's then manually toggled off) —
+    // so key the reboot decision on "was the web server actually running"
+    // rather than trying to guess which sub-case is safe. Only a reboot
+    // restores it, so force one here rather than leaving ADS-B crippled
+    // until the user notices. (The boot auto-window's own unattended
+    // timeout-close path calls stopLanWebPortal() directly, bypassing
+    // this function entirely, so it never reboots on its own.)
+    const bool need_reboot_to_reclaim_heap = s_wm.getWebPortalActive();
     Serial.println("LAN portal: disabled, releasing heap");
     stopLanWebPortal();
+    if (need_reboot_to_reclaim_heap) {
+      Serial.println("LAN portal: restarting to reclaim fragmented heap");
+      statusScreenLanPortalClosing();
+      delay(800);
+      esp_restart();
+    }
   }
 }
 

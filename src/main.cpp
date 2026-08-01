@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <esp_task_wdt.h>
 
 #include "config.h"
 #include "hardware/display.h"
@@ -30,6 +31,19 @@ unsigned long g_last_portal_countdown_draw_ms = 0;
 
 constexpr unsigned long kRadarRenderIntervalMs = 40UL;  // ~25 FPS target
 constexpr unsigned long kPortalCountdownPollMs = 500UL;
+
+void maybeRunMaintenanceReboot() {
+  if (services::ota::inProgress() || wifiLanPortalActive()) {
+    return;  // never reboot mid-OTA or while the user has the portal open
+  }
+  if (millis() < config::kMaintenanceRebootIntervalMs) {
+    return;
+  }
+  Serial.println("Maintenance: scheduled restart to clear heap fragmentation");
+  statusScreenMaintenanceRestart();
+  delay(800);
+  esp_restart();
+}
 
 void showRadarIfConnected() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -142,6 +156,9 @@ void setup() {
                 static_cast<unsigned>(
                     heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
 
+  esp_task_wdt_init(config::kWatchdogTimeoutSec, /*panic=*/true);
+  esp_task_wdt_add(NULL);
+
   bootButtonInit();
   displayInit();
   if (wifiShowsSetupScreenOnBoot()) {
@@ -164,6 +181,7 @@ void setup() {
 }
 
 void loop() {
+  esp_task_wdt_reset();
   handleBootButton();
   wifiLoop();
   if (wifiConsumeAutoPortalTimeout()) {
@@ -221,6 +239,7 @@ void loop() {
                                       services::location::lon());
       services::adsb::enrichOnePending();
       renderRadarIfDue();
+      maybeRunMaintenanceReboot();
     }
   }
 

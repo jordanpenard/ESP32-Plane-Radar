@@ -12,6 +12,7 @@
 #include <sys/time.h>
 
 #include <esp_heap_caps.h>
+#include <esp_task_wdt.h>
 
 #include "config.h"
 #include "services/adsb_client.h"
@@ -22,15 +23,20 @@ namespace services::weather {
 namespace {
 
 constexpr time_t kMinimumValidEpoch = 1609459200;  // 2021-01-01 UTC
-// Boot-time diagnostics show the largest contiguous free block this
-// hardware/firmware combo ever actually achieves tops out around ~34.8KB
-// (matches what adsb_client.cpp's own gate already assumes, see
-// kMinLargestBlockForAdsbSslBytes=34500) — even with zero contention from
-// any other connection. The old 36000 threshold here was never reachable,
-// so weather always fell back to "WX N/A". Aligned to the same
-// proven-working ceiling ADS-B already relies on, with a small margin.
+// Even right after fully releasing BOTH of ADS-B's persistent TLS clients
+// (see releasePersistentConnection()), real hardware logs repeatedly show
+// `largest` permanently settle at ~32756 bytes for the rest of the boot
+// session once ANY TLS connection has been used at all -- a ceiling that
+// never reaches the previous 34000 threshold here, so weather always fell
+// back to "WX N/A" every single cycle. This codebase's own history shows
+// ~32KB was a working gate for ADS-B's own handshake at one point (see repo
+// memory), so align to that same proven-reachable level rather than a
+// theoretical one this hardware never actually hits post-TLS-use. A gate
+// this close to the ceiling is still not a hard guarantee (mbedTLS can
+// occasionally fail the actual allocation even when this passes), which is
+// exactly why fetch() retries several times rather than relying on one shot.
 constexpr uint32_t kMinHeapForSslBytes = 48000;
-constexpr size_t kMinLargestBlockForSslBytes = 34000;
+constexpr size_t kMinLargestBlockForSslBytes = 30000;
 
 bool s_started = false;
 bool s_valid = false;
@@ -47,6 +53,17 @@ double s_last_latitude = 999.0;
 double s_last_longitude = 999.0;
 PollFn s_poll_fn = nullptr;
 
+// Persistent across attempts/cycles for the same reason ADS-B's clients are
+// (see adsb_client.cpp): a fresh WiFiClientSecure+HTTPClient pair every
+// attempt forces a brand-new mbedTLS buffer alloc/free each time, which was
+// the actual root cause of the ADS-B fragmentation ratchet ported here --
+// weather retries up to 6x per cycle, so a stack-local client repeated that
+// same churn every 3s within one cycle. Explicitly released at the end of
+// fetch() (success or exhausted) so ADS-B gets its heap back between the
+// infrequent (every ~15 min) cycles this runs.
+WiFiClientSecure s_weather_client;
+HTTPClient s_weather_http;
+
 void setLastError(const char* message) {
   if (message == nullptr || message[0] == '\0') {
     message = "unknown";
@@ -57,6 +74,7 @@ void setLastError(const char* message) {
 bool clockValid() { return time(nullptr) >= kMinimumValidEpoch; }
 
 void pollNetwork() {
+  esp_task_wdt_reset();
   if (s_poll_fn != nullptr) {
     s_poll_fn();
   }
@@ -187,7 +205,7 @@ void seedClockFromApiTime(const char* local_iso_time, int32_t utc_offset) {
 }
 
 bool fetchOnce(const String& url, int attempt, int max_attempts) {
-  WiFiClientSecure client;
+  WiFiClientSecure& client = s_weather_client;
   // ADS-B keeps its own HTTPS connection alive between polls (to avoid
   // repeated TLS handshakes), which otherwise permanently reserves the one
   // large contiguous heap block this infrequent (every ~15 min) fetch also
@@ -204,13 +222,14 @@ bool fetchOnce(const String& url, int attempt, int max_attempts) {
     return false;
   }
 
-  HTTPClient http;
+  HTTPClient& http = s_weather_http;
   if (!http.begin(client, url)) {
     s_last_http_status = 0;
     setLastError("http.begin failed");
     Serial.println("weather: http.begin failed");
     return false;
   }
+  http.setReuse(true);
   http.setConnectTimeout(config::kWeatherRequestTimeoutMs);
   http.setTimeout(config::kWeatherRequestTimeoutMs);
 
@@ -287,10 +306,12 @@ bool fetch(double latitude, double longitude) {
   constexpr int kMaxAttempts = 6;
   constexpr unsigned long kRetryDelayMs = 3000UL;
   constexpr unsigned long kRetryPollSliceMs = 100UL;
+  bool succeeded = false;
   for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
     Serial.printf("weather: fetch attempt %d/%d\n", attempt, kMaxAttempts);
     if (fetchOnce(url, attempt, kMaxAttempts)) {
-      return true;
+      succeeded = true;
+      break;
     }
     if (attempt < kMaxAttempts) {
       for (unsigned long waited = 0; waited < kRetryDelayMs;
@@ -300,7 +321,10 @@ bool fetch(double latitude, double longitude) {
       }
     }
   }
-  return false;
+  // Give the heap back to ADS-B for the ~15 min until the next cycle instead
+  // of holding this connection open indefinitely (see s_weather_client).
+  s_weather_client.stop();
+  return succeeded;
 }
 
 }  // namespace
@@ -416,6 +440,17 @@ void formatDateTimeLine(char* out, size_t out_len, bool include_seconds,
   }
   snprintf(out, out_len, "%04d-%02d-%02d %02d:%02d", year, month, day,
            local.tm_hour, local.tm_min);
+}
+
+int currentLocalHour() {
+  const time_t utc_now = time(nullptr);
+  if (utc_now < kMinimumValidEpoch) {
+    return -1;
+  }
+  const time_t local_now = utc_now + s_utc_offset_seconds;
+  tm local = {};
+  gmtime_r(&local_now, &local);
+  return local.tm_hour;
 }
 
 }  // namespace services::weather

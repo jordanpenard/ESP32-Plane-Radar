@@ -261,30 +261,47 @@ void initFooterMetrics() {
 }
 
 void initPalette() {
-  radar::kColorBackground = tft.color565(radar::kBgR, radar::kBgG, radar::kBgB);
-  radar::kColorGrid = tft.color565(radar::kGridR, radar::kGridG, radar::kGridB);
-  radar::kColorLabel = tft.color565(255, 255, 255);
-  radar::kColorCenter = tft.color565(255, 255, 255);
+  int brightness = services::settings::brightnessPercent();
+  if (services::settings::autoDimEnabled()) {
+    const int hour = services::weather::currentLocalHour();
+    const bool is_night =
+        hour >= 0 && (hour >= config::kAutoDimNightStartHour ||
+                     hour < config::kAutoDimNightEndHour);
+    if (is_night) {
+      brightness = config::kAutoDimNightBrightnessPercent;
+    }
+  }
+  auto scale = [brightness](uint8_t v) -> uint8_t {
+    return static_cast<uint8_t>((static_cast<int>(v) * brightness) / 100);
+  };
+
+  radar::kColorBackground = tft.color565(scale(radar::kBgR), scale(radar::kBgG),
+                                         scale(radar::kBgB));
+  radar::kColorGrid = tft.color565(scale(radar::kGridR), scale(radar::kGridG),
+                                   scale(radar::kGridB));
+  radar::kColorLabel = tft.color565(scale(255), scale(255), scale(255));
+  radar::kColorCenter = radar::kColorLabel;
   // GC9A01 BGR panel: swap R/B in color565 so logical red renders red on screen.
   if (config::kDisplayRgbOrder) {
-    radar::kColorAircraft =
-        tft.color565(radar::kAircraftB, radar::kAircraftG, radar::kAircraftR);
+    radar::kColorAircraft = tft.color565(
+        scale(radar::kAircraftB), scale(radar::kAircraftG), scale(radar::kAircraftR));
   } else {
-    radar::kColorAircraft =
-        tft.color565(radar::kAircraftR, radar::kAircraftG, radar::kAircraftB);
+    radar::kColorAircraft = tft.color565(
+        scale(radar::kAircraftR), scale(radar::kAircraftG), scale(radar::kAircraftB));
   }
-  radar::kColorTrackVector =
-      tft.color565(radar::kTrackR, radar::kTrackG, radar::kTrackB);
-  radar::kColorTagType =
-      tft.color565(radar::kTagTypeR, radar::kTagTypeG, radar::kTagTypeB);
-  radar::kColorTagAltitude =
-      tft.color565(radar::kTagAltR, radar::kTagAltG, radar::kTagAltB);
-  radar::kColorRunway =
-      tft.color565(radar::kRunwayR, radar::kRunwayG, radar::kRunwayB);
-  radar::kColorRunwayLabel = tft.color565(radar::kRunwayLabelR, radar::kRunwayLabelG,
-                                          radar::kRunwayLabelB);
-  radar::kColorFooterBackground =
-      tft.color565(radar::kFooterBgR, radar::kFooterBgG, radar::kFooterBgB);
+  radar::kColorTrackVector = tft.color565(
+      scale(radar::kTrackR), scale(radar::kTrackG), scale(radar::kTrackB));
+  radar::kColorTagType = tft.color565(
+      scale(radar::kTagTypeR), scale(radar::kTagTypeG), scale(radar::kTagTypeB));
+  radar::kColorTagAltitude = tft.color565(
+      scale(radar::kTagAltR), scale(radar::kTagAltG), scale(radar::kTagAltB));
+  radar::kColorRunway = tft.color565(
+      scale(radar::kRunwayR), scale(radar::kRunwayG), scale(radar::kRunwayB));
+  radar::kColorRunwayLabel = tft.color565(scale(radar::kRunwayLabelR),
+                                          scale(radar::kRunwayLabelG),
+                                          scale(radar::kRunwayLabelB));
+  radar::kColorFooterBackground = tft.color565(
+      scale(radar::kFooterBgR), scale(radar::kFooterBgG), scale(radar::kFooterBgB));
 }
 
 constexpr float kKmPerDeg = 111.0f;

@@ -252,6 +252,24 @@ void statusScreenFirmwareUpdate() {
                 sizeof(lines) / sizeof(lines[0]));
 }
 
+void statusScreenLanPortalClosing() {
+  const TextLine lines[] = {
+      {"LAN config closed", 1.15f, &kPortalGfxTitle},
+      {"Restarting...", 1.05f, &kPortalGfxBody},
+  };
+  drawTextBlock(config::kColorYellow, config::kTextOnYellow, lines,
+                sizeof(lines) / sizeof(lines[0]));
+}
+
+void statusScreenMaintenanceRestart() {
+  const TextLine lines[] = {
+      {"Scheduled restart", 1.15f, &kPortalGfxTitle},
+      {"Restarting...", 1.05f, &kPortalGfxBody},
+  };
+  drawTextBlock(config::kColorYellow, config::kTextOnYellow, lines,
+                sizeof(lines) / sizeof(lines[0]));
+}
+
 void statusScreenLanPortal(const char* ip, bool mdns_active,
                           int countdown_seconds) {
   const char* ip_text = (ip != nullptr && ip[0] != '\0') ? ip : "(no IP)";
@@ -262,7 +280,7 @@ void statusScreenLanPortal(const char* ip, bool mdns_active,
     // reaches the device, so it wouldn't register as activity either.
     if (countdown_seconds >= 0) {
       char countdown_buf[24];
-      snprintf(countdown_buf, sizeof(countdown_buf), "Auto-off in %ds",
+      snprintf(countdown_buf, sizeof(countdown_buf), "Config off in %ds",
                countdown_seconds);
       const TextLine lines[] = {
           {"LAN config ON", 1.15f, &kPortalGfxTitle},

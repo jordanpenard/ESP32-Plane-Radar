@@ -25,5 +25,7 @@ void formatWeatherLine(char* out, size_t out_len, int max_width);
 void formatDateTimeLine(char* out, size_t out_len,
 						bool include_seconds = false,
 						unsigned long display_delay_ms = 0);
+/** Current local hour (0-23), or -1 if the clock hasn't synced yet. */
+int currentLocalHour();
 
 }  // namespace services::weather

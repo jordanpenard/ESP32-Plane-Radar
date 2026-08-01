@@ -27,6 +27,8 @@ constexpr char kKeyClock24[] = "time24";
 constexpr char kKeyTimeSeconds[] = "timeSec";
 constexpr char kKeyTextScale[] = "fontPct";
 constexpr char kKeyOtaPassword[] = "otaPass";
+constexpr char kKeyAutoDim[] = "autoDim";
+constexpr char kKeyBrightness[] = "brightPct";
 
 char s_ota_password[kOtaPasswordMaxLen + 1] = {};
 bool s_footer_enabled = true;
@@ -43,6 +45,8 @@ bool s_show_time_seconds = false;
 int s_text_scale_percent = kTextScaleDefaultPercent;
 int s_interpolation_delay_ms = kInterpolationDelayDefaultMs;
 bool s_clock_follows_interpolation_delay = true;
+bool s_auto_dim_enabled = false;
+int s_brightness_percent = kBrightnessDefaultPercent;
 
 bool checkboxChecked(const char* value) {
   if (value == nullptr || value[0] == '\0') {
@@ -104,6 +108,16 @@ int clampInterpolationDelayMs(int value) {
   return value;
 }
 
+int clampBrightnessPercent(int value) {
+  if (value < kBrightnessMinPercent) {
+    return kBrightnessMinPercent;
+  }
+  if (value > kBrightnessMaxPercent) {
+    return kBrightnessMaxPercent;
+  }
+  return value;
+}
+
 bool parseTextScalePercent(const char* value, int* result) {
   if (value == nullptr || value[0] == '\0' || result == nullptr) {
     return false;
@@ -146,6 +160,27 @@ bool parseInterpolationDelayMs(const char* value, int* result) {
   return true;
 }
 
+bool parseBrightnessPercent(const char* value, int* result) {
+  if (value == nullptr || value[0] == '\0' || result == nullptr) {
+    return false;
+  }
+
+  char* end = nullptr;
+  const long parsed = std::strtol(value, &end, 10);
+  if (end == value) {
+    return false;
+  }
+  while (*end != '\0' && std::isspace(static_cast<unsigned char>(*end))) {
+    ++end;
+  }
+  if (*end != '\0') {
+    return false;
+  }
+
+  *result = clampBrightnessPercent(static_cast<int>(parsed));
+  return true;
+}
+
 bool parseAltitudeOffset(const char* value, float* result) {
   if (value == nullptr || value[0] == '\0' || result == nullptr) {
     return false;
@@ -184,6 +219,8 @@ void loadDefaults() {
   s_text_scale_percent = kTextScaleDefaultPercent;
   s_interpolation_delay_ms = kInterpolationDelayDefaultMs;
   s_clock_follows_interpolation_delay = true;
+  s_auto_dim_enabled = false;
+  s_brightness_percent = kBrightnessDefaultPercent;
 }
 
 void persist() {
@@ -206,6 +243,8 @@ void persist() {
   prefs.putInt(kKeyTextScale, s_text_scale_percent);
   prefs.putInt(kKeyInterpolationDelayMs, s_interpolation_delay_ms);
   prefs.putBool(kKeyClockFollowInterp, s_clock_follows_interpolation_delay);
+  prefs.putBool(kKeyAutoDim, s_auto_dim_enabled);
+  prefs.putInt(kKeyBrightness, s_brightness_percent);
   prefs.putString(kKeyOtaPassword, s_ota_password);
   prefs.end();
 }
@@ -238,6 +277,9 @@ void init() {
       prefs.getInt(kKeyInterpolationDelayMs, kInterpolationDelayDefaultMs));
   s_clock_follows_interpolation_delay =
       prefs.getBool(kKeyClockFollowInterp, true);
+  s_auto_dim_enabled = prefs.getBool(kKeyAutoDim, false);
+  s_brightness_percent = clampBrightnessPercent(
+      prefs.getInt(kKeyBrightness, kBrightnessDefaultPercent));
 
   String value = prefs.getString(kKeyOtaPassword, config::kDefaultOtaPassword);
   copyCleanText(value.c_str(), s_ota_password, sizeof(s_ota_password));
@@ -284,6 +326,10 @@ bool showTimeSeconds() { return s_show_time_seconds; }
 
 int textScalePercent() { return s_text_scale_percent; }
 
+bool autoDimEnabled() { return s_auto_dim_enabled; }
+
+int brightnessPercent() { return s_brightness_percent; }
+
 const char* otaPassword() { return s_ota_password; }
 
 void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
@@ -299,6 +345,8 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* time_seconds_checkbox,
                     const char* clock_follow_interp_checkbox,
                     const char* text_scale_percent_value,
+                    const char* auto_dim_checkbox,
+                    const char* brightness_percent_value,
                     const char* ota_password_value) {
   s_footer_enabled = checkboxChecked(footer_checkbox);
   s_weather_enabled = checkboxChecked(weather_checkbox);
@@ -329,6 +377,11 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                                 &interpolation_delay_ms)) {
     s_interpolation_delay_ms = interpolation_delay_ms;
   }
+  s_auto_dim_enabled = checkboxChecked(auto_dim_checkbox);
+  int brightness_percent = s_brightness_percent;
+  if (parseBrightnessPercent(brightness_percent_value, &brightness_percent)) {
+    s_brightness_percent = brightness_percent;
+  }
 
   char password[kOtaPasswordMaxLen + 1] = {};
   copyCleanText(ota_password_value, password, sizeof(password));
@@ -350,6 +403,8 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
   Serial.printf("ADS-B interpolation: %s\n",
                 s_adsb_interpolation_enabled ? "on" : "off");
   Serial.printf("Interpolation delay: %d ms\n", s_interpolation_delay_ms);
+  Serial.printf("Auto-dim: %s, brightness: %d%%\n",
+                s_auto_dim_enabled ? "on" : "off", s_brightness_percent);
 }
 
 void clear() {

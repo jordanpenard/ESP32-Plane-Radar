@@ -39,12 +39,12 @@ constexpr unsigned long kBootPortalToggleHoldMs = 1200UL;
  * the web UI is reachable without holding BOOT; if no portal activity
  * (a page view or form save) happens within the window, it auto-reverts
  * to normal (radar/ADS-B) mode to free the heap it reserves. Kept long
- * enough (60s) for a human to notice the on-screen IP, unlock their
+ * enough (30s) for a human to notice the on-screen IP, unlock their
  * phone/laptop, open a browser and type it in — the portal has no mDNS
  * during this window (see startLanWebPortal()'s enable_mdns param), so
  * only the raw numeric address works here, which takes longer to type
  * than a bookmarked/remembered hostname. */
-constexpr unsigned long kBootPortalAutoWindowMs = 60000UL;
+constexpr unsigned long kBootPortalAutoWindowMs = 30000UL;
 
 // --- Display: GC9A01 1.28" round 240×240 (SPI) ---
 constexpr gpio_num_t kDisplayPinRst = GPIO_NUM_0;
@@ -96,6 +96,29 @@ constexpr uint16_t kColorBlack = 0x0000;
 constexpr uint16_t kColorYellow = 0xFFE0;
 constexpr uint16_t kTextOnYellow = kColorBlack;
 constexpr uint16_t kTextOnBlack = 0xFFFF;
+
+// --- Reliability ---
+/** Task watchdog for the main loop task; a hang longer than this reboots
+ * the device instead of leaving it silently unresponsive. Long-but-normal
+ * blocking waits (WiFi connect attempts, the WiFi setup captive portal)
+ * explicitly feed the watchdog so they aren't mistaken for a hang. */
+constexpr uint32_t kWatchdogTimeoutSec = 20UL;
+/** Preventive full reboot on this cadence (while idle: not mid-OTA, LAN
+ * portal closed) to clear any slow heap fragmentation that accumulates
+ * over very long uptimes from sources other than the LAN portal. */
+constexpr unsigned long kMaintenanceRebootIntervalMs =
+    24UL * 60UL * 60UL * 1000UL;
+/** Last-resort self-heal: if the largest free heap block stays below this
+ * for kCriticalLargestBlockStreakLimit consecutive ~30s ADS-B diag polls
+ * (see maybeLogAdsbDiagnostics()), reboot rather than keep failing every
+ * TLS handshake indefinitely. */
+constexpr size_t kCriticalLargestFreeBlockBytes = 20000;
+constexpr uint16_t kCriticalLargestBlockStreakLimit = 10;
+
+// --- Display auto-dim (night hours use a fixed, dimmer brightness) ---
+constexpr int kAutoDimNightStartHour = 21;  // inclusive, local time
+constexpr int kAutoDimNightEndHour = 7;     // exclusive, local time
+constexpr int kAutoDimNightBrightnessPercent = 30;
 
 // --- Optional interpolation diagnostics (Serial) ---
 // Set true temporarily to capture structured interpolation data in monitor.
