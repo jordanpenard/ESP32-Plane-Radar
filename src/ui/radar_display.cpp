@@ -1322,14 +1322,20 @@ void drawFooter() {
 
   updateFooterCacheIfNeeded();
 
+  constexpr int xc = config::kDisplayHeight / 2;
+  constexpr int dy = radar::kFooterTopY - xc;
+  constexpr int foot_line_x0 = xc - sqrt((radar::kGridOuterRadius * radar::kGridOuterRadius) - (dy * dy));
+
   // The trapezoid follows the narrowing bottom edge of the round panel.
-  s_draw->fillTriangle(28, radar::kFooterTopY, 212, radar::kFooterTopY, 168,
-                       radar::kFooterBottomY,
+  s_draw->fillTriangle(28, radar::kFooterTopY, 
+                       config::kDisplayWidth-28, radar::kFooterTopY, 
+                       config::kDisplayWidth-72, radar::kFooterBottomY,
                        radar::kColorFooterBackground);
-  s_draw->fillTriangle(28, radar::kFooterTopY, 168, radar::kFooterBottomY, 72,
-                       radar::kFooterBottomY,
+  s_draw->fillTriangle(28, radar::kFooterTopY, 
+                       config::kDisplayWidth-72, radar::kFooterBottomY,
+                       72, radar::kFooterBottomY,
                        radar::kColorFooterBackground);
-  s_draw->drawFastHLine(44, radar::kFooterTopY, 152, radar::kColorGrid);
+  s_draw->drawFastHLine(foot_line_x0, radar::kFooterTopY, 2 * (xc - foot_line_x0), radar::kColorGrid);
 
   if (services::settings::weatherEnabled()) {
     drawFooterLine(s_cached_weather_line, radar::kFooterWeatherY, 176,
