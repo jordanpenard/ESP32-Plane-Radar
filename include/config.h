@@ -53,8 +53,8 @@ constexpr gpio_num_t kDisplayPinDc = GPIO_NUM_6;
 constexpr gpio_num_t kDisplayPinMosi = GPIO_NUM_22;  // display SDA
 constexpr gpio_num_t kDisplayPinSclk = GPIO_NUM_23;  // display SCL
 
-constexpr int kDisplayWidth = 330;
-constexpr int kDisplayHeight = 330;
+constexpr int kDisplayWidth = 240;
+constexpr int kDisplayHeight = 240;
 
 constexpr uint32_t kDisplaySpiWriteHz = 40000000;
 // GC9B72 modules often need invert + BGR for correct black/green output
