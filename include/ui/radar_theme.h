@@ -1,15 +1,16 @@
 #pragma once
 
+#include "config.h"
 #include <cstdint>
 
 namespace ui::radar {
 
-constexpr int kSize = 240;
-constexpr int kCenterX = kSize / 2;
-constexpr int kCenterY = kSize / 2;
+constexpr int kSize = config::kDisplayWidth;
+constexpr int kCenterX = config::kDisplayWidth / 2;
+constexpr int kCenterY = config::kDisplayHeight / 2;
 
 /** Outermost grid ring (inside edge labels). */
-constexpr int kGridOuterRadius = 107;
+constexpr int kGridOuterRadius = (config::kDisplayWidth / 2) - 13;
 
 /** N: offset from top edge (top_center, negative = up). */
 constexpr int kCardinalNorthOffsetY = -1;
@@ -63,12 +64,12 @@ constexpr int kBeyondRingScreenMarginPx = 2;
 constexpr int kAircraftTagLabelHeightPx = 13;
 
 /** Two-row weather/time overlay. */
-constexpr int kFooterTopY = 194;
-constexpr int kFooterBottomY = 233;
-constexpr int kFooterWeatherY = 197;
-constexpr int kFooterTimeY = 216;
-constexpr int kFooterTimeOnlyY = 205;
 constexpr int kFooterLabelHeightPx = 13;
+constexpr int kFooterTopY = config::kDisplayHeight - 46;
+constexpr int kFooterWeatherY = kFooterTopY + 3;
+constexpr int kFooterTimeY = kFooterWeatherY + kFooterLabelHeightPx + 3;
+constexpr int kFooterBottomY = kFooterTimeY + kFooterLabelHeightPx;
+constexpr int kFooterTimeOnlyY = config::kDisplayHeight - 35;
 
 /** RGB565 palette targets (applied in initPalette). */
 constexpr uint8_t kBgR = 4;
