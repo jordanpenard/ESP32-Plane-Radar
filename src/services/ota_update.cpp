@@ -6,6 +6,7 @@
 #include "config.h"
 #include "services/display_settings.h"
 #include "ui/status_screens.h"
+#include <esp_task_wdt.h>
 
 namespace services::ota {
 namespace {
@@ -82,6 +83,14 @@ void handleUploadChunk() {
   HTTPUpload& upload = web->upload();
 
   if (upload.status == UPLOAD_FILE_START) {
+    // Temporarily change timeout to 60 seconds during OTA
+    const esp_task_wdt_config_t twdt_config = {
+        .timeout_ms = 60000, 
+        .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1,
+        .trigger_panic = false // Prevent hardware panic reset
+    };
+    esp_task_wdt_reconfigure(&twdt_config);
+
     s_upload_authenticated =
         web->authenticate(config::kOtaUsername, settings::otaPassword());
     s_upload_error.clear();
