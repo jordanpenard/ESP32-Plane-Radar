@@ -12,6 +12,7 @@ namespace services::settings {
 namespace {
 
 constexpr char kPrefsNamespace[] = "display";
+constexpr char kKeyPosixTz[] = "posixTz";
 constexpr char kKeyFooter[] = "footer";
 constexpr char kKeyWeather[] = "weather";
 constexpr char kKeyFahrenheit[] = "tempF";
@@ -35,6 +36,7 @@ constexpr char kKeyBrightness[] = "brightPct";
 char s_ota_password[kOtaPasswordMaxLen + 1] = {};
 bool s_footer_enabled = true;
 bool s_weather_enabled = true;
+char s_posix_tz_config[65] = {};
 bool s_temperature_fahrenheit = false;
 bool s_altitude_meters = false;
 float s_altitude_offset_feet = 0.0f;
@@ -211,6 +213,8 @@ void loadDefaults() {
                 sizeof(s_ota_password));
   s_footer_enabled = true;
   s_weather_enabled = true;
+  copyCleanText(config::kDefaultTimeZone, s_posix_tz_config,
+                sizeof(s_posix_tz_config));
   s_temperature_fahrenheit = false;
   s_altitude_meters = false;
   s_altitude_offset_feet = 0.0f;
@@ -236,6 +240,7 @@ void persist() {
   }
   prefs.putBool(kKeyFooter, s_footer_enabled);
   prefs.putBool(kKeyWeather, s_weather_enabled);
+  prefs.putString(kKeyPosixTz, s_posix_tz_config);
   prefs.putBool(kKeyFahrenheit, s_temperature_fahrenheit);
   prefs.putBool(kKeyAltitudeMeters, s_altitude_meters);
   prefs.putFloat(kKeyAltitudeOffsetFeet, s_altitude_offset_feet);
@@ -269,6 +274,14 @@ void init() {
 
   s_footer_enabled = prefs.getBool(kKeyFooter, true);
   s_weather_enabled = prefs.getBool(kKeyWeather, true);
+
+  String tz_value = prefs.getString(kKeyPosixTz, config::kDefaultTimeZone);
+  copyCleanText(tz_value.c_str(), s_posix_tz_config, sizeof(s_posix_tz_config));
+  if (s_posix_tz_config[0] == '\0') {
+    copyCleanText(config::kDefaultTimeZone, s_posix_tz_config,
+                  sizeof(s_posix_tz_config));
+  }
+
   s_temperature_fahrenheit = prefs.getBool(kKeyFahrenheit, false);
   s_altitude_meters = prefs.getBool(kKeyAltitudeMeters, false);
   s_altitude_offset_feet = prefs.getFloat(kKeyAltitudeOffsetFeet, 0.0f);
@@ -305,6 +318,8 @@ void init() {
 bool footerEnabled() { return s_footer_enabled; }
 
 bool weatherEnabled() { return s_weather_enabled; }
+
+const char* posix_tz() { return s_posix_tz_config; }
 
 bool temperatureFahrenheit() { return s_temperature_fahrenheit; }
 
@@ -349,6 +364,7 @@ int brightnessPercent() { return s_brightness_percent; }
 const char* otaPassword() { return s_ota_password; }
 
 void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
+                    const char* posix_tz_config,
                     const char* fahrenheit_checkbox,
                     bool use_miles,
                     const char* altitude_offset_value,
@@ -368,6 +384,12 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* ota_password_value) {
   s_footer_enabled = checkboxChecked(footer_checkbox);
   s_weather_enabled = checkboxChecked(weather_checkbox);
+  char posiz_tz[65] = {};
+  copyCleanText(posix_tz_config, posiz_tz, sizeof(posiz_tz));
+  if (posiz_tz[0] != '\0') {
+    strncpy(s_posix_tz_config, posiz_tz, sizeof(s_posix_tz_config) - 1);
+    s_posix_tz_config[sizeof(s_posix_tz_config) - 1] = '\0';
+  }
   s_temperature_fahrenheit = checkboxChecked(fahrenheit_checkbox);
   float altitude_offset = s_altitude_offset_feet;
   if (parseAltitudeOffset(altitude_offset_value, &altitude_offset)) {
@@ -413,6 +435,7 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
   }
 
   persist();
+  Serial.printf("Posix Timezone: %s", s_posix_tz_config);
   Serial.printf("Display footer: %s, weather: %s, altitude: %s, text: %d%%\n",
                 s_footer_enabled ? "on" : "off",
                 s_weather_enabled ? "on" : "off",

@@ -13,6 +13,9 @@ constexpr char kPortalIp[] = "192.168.4.1";
 constexpr char kPortalHostname[] = "plane-radar";
 constexpr char kPortalHostUrl[] = "plane-radar.local";
 
+/** Default Posix timezone (London); can be overwriten in wifimanager */
+constexpr char kDefaultTimeZone[] = "GMT0BST,M3.5.0/1,M10.5.0/2";
+
 /** Per-attempt STA connect wait (ms); retried kWifiConnectAttempts times. */
 constexpr unsigned long kWifiConnectAttemptMs = 15000;
 constexpr uint8_t kWifiConnectAttempts = 3;
@@ -23,8 +26,8 @@ constexpr unsigned long kWifiDownGraceMs = 4000;
 /** Minimum interval between background reconnect tries. */
 constexpr unsigned long kWifiReconnectIntervalMs = 15000;
 
-// --- BOOT button (ESP32-C6 Super Mini, active LOW) ---
-constexpr gpio_num_t kBootPin = GPIO_NUM_9;
+// --- BOOT button (ESP32-S3 Super Mini, active LOW) ---
+constexpr gpio_num_t kBootPin = GPIO_NUM_0;
 constexpr unsigned long kBootResetHoldMs = 3000UL;
 /** Ignore BOOT taps shorter than this (debounce). */
 constexpr unsigned long kBootTapMinMs = 40UL;
@@ -44,17 +47,18 @@ constexpr unsigned long kBootPortalToggleHoldMs = 1200UL;
  * during this window (see startLanWebPortal()'s enable_mdns param), so
  * only the raw numeric address works here, which takes longer to type
  * than a bookmarked/remembered hostname. */
-constexpr unsigned long kBootPortalAutoWindowMs = 30000UL;
+constexpr unsigned long kBootPortalAutoWindowMs = 5000UL;
 
 // --- Display: GC9B72 2.1" round 360×360 (SPI) ---
-constexpr gpio_num_t kDisplayPinRst = GPIO_NUM_7;
-constexpr gpio_num_t kDisplayPinCs = GPIO_NUM_20;
-constexpr gpio_num_t kDisplayPinDc = GPIO_NUM_6;
-constexpr gpio_num_t kDisplayPinMosi = GPIO_NUM_22;  // display SDA
-constexpr gpio_num_t kDisplayPinSclk = GPIO_NUM_23;  // display SCL
+constexpr gpio_num_t kDisplayPinRst = GPIO_NUM_4;
+constexpr gpio_num_t kDisplayPinCs = GPIO_NUM_6;
+constexpr gpio_num_t kDisplayPinDc = GPIO_NUM_5;
+constexpr gpio_num_t kDisplayPinMosi = GPIO_NUM_2;  // display SDA
+constexpr gpio_num_t kDisplayPinSclk = GPIO_NUM_1;  // display SCL
 
-constexpr int kDisplayWidth = 330;
-constexpr int kDisplayHeight = 330;
+constexpr int kDisplayWidth = 360;
+constexpr int kDisplayHeight = 360;
+constexpr int kDisplayColorDepth = 8;
 
 constexpr uint32_t kDisplaySpiWriteHz = 40000000;
 // GC9B72 modules often need invert + BGR for correct black/green output
