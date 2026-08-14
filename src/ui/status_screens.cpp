@@ -71,9 +71,19 @@ void applyLineStyle(const TextLine& line) {
 }
 
 void drawTextBlock(uint16_t bg, uint16_t fg, const TextLine* lines, size_t count) {
-  tft.fillScreen(bg);
-  tft.setTextColor(fg, bg);
-  tft.setTextDatum(textdatum_t::middle_center);
+  lgfx::LovyanGFX* s_draw = &tft;
+  LGFX_Sprite s_frame(&tft);
+
+  s_frame.setColorDepth(16);
+  if (!s_frame.createSprite(config::kDisplayWidth, config::kDisplayHeight)) {
+    Serial.println("init: frame sprite alloc failed");
+  }
+  
+  displayFontEnsureLoaded(s_frame);
+
+  s_frame.fillScreen(bg);
+  s_frame.setTextColor(fg, bg);
+  s_frame.setTextDatum(textdatum_t::middle_center);
 
   int total_h = 0;
   for (size_t i = 0; i < count; ++i) {
@@ -93,9 +103,11 @@ void drawTextBlock(uint16_t bg, uint16_t fg, const TextLine* lines, size_t count
     const int h =
         displayFontIsSmooth() ? lineHeightVlw(lines[i].vlw_size)
                               : lineHeightGfx(lines[i].gfx_font);
-    tft.drawString(lines[i].text, kCenterX, y + h / 2);
+    s_frame.drawString(lines[i].text, kCenterX, y + h / 2);
     y += h + kLineGap;
   }
+
+  s_frame.pushSprite(0, 0);
 }
 
 constexpr float kConnectingDetailVlw = 0.92f;
