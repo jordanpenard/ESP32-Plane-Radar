@@ -163,7 +163,12 @@ void setup() {
                 static_cast<unsigned>(
                     heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
 
-  esp_task_wdt_init(config::kWatchdogTimeoutSec, /*panic=*/true);
+  const esp_task_wdt_config_t wdt_config = {
+      .timeout_ms = config::kWatchdogTimeoutSec*1000, 
+      .idle_core_mask = (1 << CONFIG_FREERTOS_NUMBER_OF_CORES) - 1,
+      .trigger_panic = true
+  };
+  esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL);
 
   bootButtonInit();
