@@ -1337,12 +1337,12 @@ void drawFooter() {
                        radar::kColorFooterBackground);
   s_draw->drawFastHLine(foot_line_x0, radar::kFooterTopY, 2 * (xc - foot_line_x0), radar::kColorGrid);
 
-  if (services::settings::weatherEnabled()) {
+  if (services::settings::weatherEnabled() || services::settings::heapEnabled()) {
     drawFooterLine(s_cached_weather_line, radar::kFooterWeatherY, 176,
                    s_cached_weather_line_color);
   }
 
-  const int time_y = services::settings::weatherEnabled()
+  const int time_y = services::settings::weatherEnabled() || services::settings::heapEnabled()
                          ? radar::kFooterTimeY
                          : radar::kFooterTimeOnlyY;
   drawFooterLine(s_cached_date_time, time_y, 128, s_cached_date_time_color);
@@ -1815,6 +1815,7 @@ void smoothAircraftScreenPosition(const services::adsb::Aircraft& plane,
 void updateFooterCacheIfNeeded() {
   const unsigned long now = millis();
   const bool weather_enabled = services::settings::weatherEnabled();
+  const bool heap_enabled = services::settings::heapEnabled();
   const bool show_seconds = services::settings::showTimeSeconds();
     const unsigned long display_delay_ms =
       services::settings::clockFollowsInterpolationDelay()
@@ -1855,6 +1856,9 @@ void updateFooterCacheIfNeeded() {
                                            sizeof(s_cached_weather_line), 176);
       s_cached_weather_line_color = radar::kColorTagType;
     }
+  } else if (heap_enabled) {
+      sprintf(s_cached_weather_line, "Heap %dkB/%dkB", ESP.getMaxAllocHeap()/1024, ESP.getFreeHeap()/1024); 
+      s_cached_weather_line_color = radar::kColorTagType;
   } else {
     s_cached_weather_line[0] = '\0';
   }

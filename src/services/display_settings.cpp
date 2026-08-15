@@ -13,7 +13,6 @@ namespace {
 
 constexpr char kPrefsNamespace[] = "display";
 constexpr char kKeyFooter[] = "footer";
-constexpr char kKeyWeather[] = "weather";
 constexpr char kKeyFahrenheit[] = "tempF";
 constexpr char kKeyAltitudeMeters[] = "altM";
 constexpr char kKeyAltitudeOffsetFeet[] = "altOffFt";
@@ -33,8 +32,7 @@ constexpr char kKeyAutoDim[] = "autoDim";
 constexpr char kKeyBrightness[] = "brightPct";
 
 char s_ota_password[kOtaPasswordMaxLen + 1] = {};
-bool s_footer_enabled = true;
-bool s_weather_enabled = true;
+char s_footer_config[13] = {};
 bool s_temperature_fahrenheit = false;
 bool s_altitude_meters = false;
 float s_altitude_offset_feet = 0.0f;
@@ -209,8 +207,8 @@ bool parseAltitudeOffset(const char* value, float* result) {
 void loadDefaults() {
   copyCleanText(config::kDefaultOtaPassword, s_ota_password,
                 sizeof(s_ota_password));
-  s_footer_enabled = true;
-  s_weather_enabled = true;
+  copyCleanText("none", s_footer_config,
+                sizeof(s_footer_config));
   s_temperature_fahrenheit = false;
   s_altitude_meters = false;
   s_altitude_offset_feet = 0.0f;
@@ -234,8 +232,7 @@ void persist() {
   if (!prefs.begin(kPrefsNamespace, false)) {
     return;
   }
-  prefs.putBool(kKeyFooter, s_footer_enabled);
-  prefs.putBool(kKeyWeather, s_weather_enabled);
+  prefs.putString(kKeyFooter, s_footer_config);
   prefs.putBool(kKeyFahrenheit, s_temperature_fahrenheit);
   prefs.putBool(kKeyAltitudeMeters, s_altitude_meters);
   prefs.putFloat(kKeyAltitudeOffsetFeet, s_altitude_offset_feet);
@@ -267,8 +264,12 @@ void init() {
     return;
   }
 
-  s_footer_enabled = prefs.getBool(kKeyFooter, true);
-  s_weather_enabled = prefs.getBool(kKeyWeather, true);
+  String footer_value = prefs.getString(kKeyFooter, "none");
+  copyCleanText(footer_value.c_str(), s_footer_config, sizeof(s_footer_config));
+  if (s_footer_config[0] == '\0') {
+    copyCleanText("none", s_footer_config,
+                  sizeof(s_footer_config));
+  }
   s_temperature_fahrenheit = prefs.getBool(kKeyFahrenheit, false);
   s_altitude_meters = prefs.getBool(kKeyAltitudeMeters, false);
   s_altitude_offset_feet = prefs.getFloat(kKeyAltitudeOffsetFeet, 0.0f);
@@ -302,9 +303,13 @@ void init() {
   prefs.end();
 }
 
-bool footerEnabled() { return s_footer_enabled; }
+const char* footerConfig() { return s_footer_config; }
 
-bool weatherEnabled() { return s_weather_enabled; }
+bool footerEnabled() { return strcmp(s_footer_config, "none") != 0; }
+
+bool weatherEnabled() { return strcmp(s_footer_config, "time_weather") == 0; }
+
+bool heapEnabled() { return strcmp(s_footer_config, "time_heap") == 0; }
 
 bool temperatureFahrenheit() { return s_temperature_fahrenheit; }
 
@@ -348,7 +353,7 @@ int brightnessPercent() { return s_brightness_percent; }
 
 const char* otaPassword() { return s_ota_password; }
 
-void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
+void saveFromPortal(const char* footer_config,
                     const char* fahrenheit_checkbox,
                     bool use_miles,
                     const char* altitude_offset_value,
@@ -366,8 +371,13 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* auto_dim_checkbox,
                     const char* brightness_percent_value,
                     const char* ota_password_value) {
-  s_footer_enabled = checkboxChecked(footer_checkbox);
-  s_weather_enabled = checkboxChecked(weather_checkbox);
+
+  char footer[13] = {};
+  copyCleanText(footer_config, footer, sizeof(footer));
+  if (footer[0] != '\0') {
+    strncpy(s_footer_config, footer, sizeof(s_footer_config) - 1);
+    s_footer_config[sizeof(s_footer_config) - 1] = '\0';
+  }
   s_temperature_fahrenheit = checkboxChecked(fahrenheit_checkbox);
   float altitude_offset = s_altitude_offset_feet;
   if (parseAltitudeOffset(altitude_offset_value, &altitude_offset)) {
@@ -413,9 +423,8 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
   }
 
   persist();
-  Serial.printf("Display footer: %s, weather: %s, altitude: %s, text: %d%%\n",
-                s_footer_enabled ? "on" : "off",
-                s_weather_enabled ? "on" : "off",
+  Serial.printf("Footer: %s, altitude: %s, text: %d%%\n",
+                s_footer_config,
                 s_altitude_meters ? "m" : "ft", s_text_scale_percent);
   Serial.printf("Altitude offset: %.1f ft\n", s_altitude_offset_feet);
   Serial.printf("Altitude filter: %s, mode: %s, threshold: %.1f ft\n",

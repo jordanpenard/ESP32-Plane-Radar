@@ -217,15 +217,23 @@ WiFiManagerParameter s_param_radar_range_idx(
 char s_range_preset_html[700] = {};
 WiFiManagerParameter s_param_range_preset(s_range_preset_html);
 
-char s_footer_checkbox_attrs[32] = "type=\"checkbox\"";
-WiFiManagerParameter s_param_footer("show_footer", "Show weather and clock", "T",
-                                    2, s_footer_checkbox_attrs,
-                                    WFM_LABEL_AFTER);
+char s_footer_config_attrs[711];
+WiFiManagerParameter* s_param_footer_config = NULL;
+void create_footer_config_param() {
+  const char * footer_config = services::settings::footerConfig();
+  String conf_none          = (strcmp(footer_config, "none") == 0) ? " checked='checked' " : "";
+  String conf_time          = (strcmp(footer_config, "time") == 0) ? " checked='checked' " : "";
+  String conf_time_weather  = (strcmp(footer_config, "time_weather") == 0) ? " checked='checked' " : "";
+  String conf_time_heap     = (strcmp(footer_config, "time_heap") == 0) ? " checked='checked' " : "";
+  String ret = "<p>Footer:</p>"
+              "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice1' name='footer_config_selection' value='none'" + conf_none + "><label for='choice1'>None</label><br>"
+              "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice2' name='footer_config_selection' value='time'" + conf_time + "><label for='choice2'>Time only</label><br>"
+              "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice3' name='footer_config_selection' value='time_weather'" + conf_time_weather + "><label for='choice3'>Time and weather</label><br>"
+              "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice4' name='footer_config_selection' value='time_heap'" + conf_time_heap + "><label for='choice4'>Time and heap stats</label><br>";
 
-char s_weather_checkbox_attrs[32] = "type=\"checkbox\"";
-WiFiManagerParameter s_param_weather(
-    "show_weather", "Show current weather", "T", 2,
-    s_weather_checkbox_attrs, WFM_LABEL_AFTER);
+  snprintf(s_footer_config_attrs, sizeof(s_footer_config_attrs), ret.c_str());
+  s_param_footer_config = new WiFiManagerParameter(s_footer_config_attrs);
+}
 
 char s_fahrenheit_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_fahrenheit(
@@ -507,14 +515,7 @@ void refreshPortalParamDefaults() {
                        sizeof(s_runways_checkbox_attrs),
                        ui::radar::showRunways());
   s_param_runways.setValue("T", 2);
-  refreshCheckboxAttrs(s_footer_checkbox_attrs,
-                       sizeof(s_footer_checkbox_attrs),
-                       services::settings::footerEnabled());
-  s_param_footer.setValue("T", 2);
-  refreshCheckboxAttrs(s_weather_checkbox_attrs,
-                       sizeof(s_weather_checkbox_attrs),
-                       services::settings::weatherEnabled());
-  s_param_weather.setValue("T", 2);
+  create_footer_config_param();
   refreshCheckboxAttrs(s_fahrenheit_checkbox_attrs,
                        sizeof(s_fahrenheit_checkbox_attrs),
                        services::settings::temperatureFahrenheit());
@@ -595,8 +596,16 @@ void onPortalParamsSaved() {
   ui::radar::saveMilesFromPortal(s_param_miles.getValue());
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
   ui::radar::saveRangeIndexFromPortal(s_param_radar_range_idx.getValue());
+
+  String footer_config_value;
+  if (s_wm.server->hasArg("footer_config_selection")) {
+    footer_config_value = s_wm.server->arg("footer_config_selection");
+  } else {
+    footer_config_value = "none";
+  }
+
   services::settings::saveFromPortal(
-      s_param_footer.getValue(), s_param_weather.getValue(),
+      footer_config_value.c_str(),
       s_param_fahrenheit.getValue(), services::units::useImperialDistance(),
       s_param_altitude_offset.getValue(),
       s_param_alt_filter_enabled.getValue(),
@@ -621,8 +630,7 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String miles = web.arg("use_miles");
   const String runways = web.arg("show_runways");
   const String range_idx = web.arg("radar_range_idx");
-  const String footer = web.arg("show_footer");
-  const String weather = web.arg("show_weather");
+  const String footer_config = web.arg("footer_config_selection");
   const String fahrenheit = web.arg("temp_f");
   const String altitude_offset = web.arg("alt_offset");
   const String altitude_filter_enabled = web.arg("alt_filter_enabled");
@@ -648,7 +656,8 @@ void savePortalParamsFromRequest(WebServer& web) {
   ui::radar::saveRunwaysFromPortal(runways.c_str());
   ui::radar::saveRangeIndexFromPortal(range_idx.c_str());
   services::settings::saveFromPortal(
-      footer.c_str(), weather.c_str(), fahrenheit.c_str(),
+      footer_config.c_str(),
+      fahrenheit.c_str(),
       services::units::useImperialDistance(), altitude_offset.c_str(),
       altitude_filter_enabled.c_str(), altitude_filter_under.c_str(),
       altitude_filter_value.c_str(),
@@ -767,8 +776,7 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_param_runways);
   wm.addParameter(&s_param_radar_range_idx);
   wm.addParameter(&s_param_range_preset);
-  wm.addParameter(&s_param_footer);
-  wm.addParameter(&s_param_weather);
+  wm.addParameter(s_param_footer_config);
   wm.addParameter(&s_param_fahrenheit);
   wm.addParameter(&s_break_fahrenheit);
   wm.addParameter(&s_param_weather_fix_time);
