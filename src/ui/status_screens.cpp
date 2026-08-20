@@ -10,6 +10,7 @@
 #include "config.h"
 #include "hardware/display.h"
 #include "hardware/display_font.h"
+#include "ui/frame_buffer.h"
 
 namespace lgfx_fonts = lgfx::v1::fonts;
 
@@ -71,14 +72,7 @@ void applyLineStyle(const TextLine& line) {
 }
 
 void drawTextBlock(uint16_t bg, uint16_t fg, const TextLine* lines, size_t count) {
-  lgfx::LovyanGFX* s_draw = &tft;
-  LGFX_Sprite s_frame(&tft);
-
-  s_frame.setColorDepth(16);
-  if (!s_frame.createSprite(config::kDisplayWidth, config::kDisplayHeight)) {
-    Serial.println("init: frame sprite alloc failed");
-  }
-  
+  LGFX_Sprite s_frame = frame_buffer::get_s_frame();
   displayFontEnsureLoaded(s_frame);
 
   s_frame.fillScreen(bg);
@@ -141,39 +135,27 @@ void fitSsidLine() {
 }
 
 void drawConnectingText() {
-  tft.fillScreen(config::kColorBlack);
-
-  tft.setTextDatum(textdatum_t::middle_center);
-  tft.setTextColor(config::kTextOnBlack, config::kColorBlack);
-
-  applyConnectingDetailStyle();
-  const int detail_h = tft.fontHeight();
-  const int total_h = detail_h * 2 + kLineGap;
-  const int block_top = (config::kDisplayHeight - total_h) / 2;
-  constexpr int kPanelPadY = 8;
-  tft.fillRect(kCenterX - kConnectingTextMaxWidthPx / 2, block_top - kPanelPadY,
-               kConnectingTextMaxWidthPx, total_h + kPanelPadY * 2, config::kColorBlack);
-
-  int y = block_top;
-  tft.drawString("Connecting to", kCenterX, y + detail_h / 2);
-  y += detail_h + kLineGap;
-  tft.drawString(s_ssid_line, kCenterX, y + detail_h / 2);
-
+  const TextLine lines[] = {
+    {"Connecting to", 1.0f, &kGfxBody},
+    {s_connecting_ssid, 1.0f, &kGfxBody}
+  };
+  drawTextBlock(config::kColorBlack, config::kTextOnBlack, lines, 2);
+  
   s_connecting_text_drawn = true;
 }
 
-void eraseSpinnerDots() {
+void eraseSpinnerDots(LGFX_Sprite s_frame) {
   for (int i = 0; i < kSpinnerDotCount; ++i) {
     if (!s_spinner_dots[i].drawn) {
       continue;
     }
-    tft.fillCircle(s_spinner_dots[i].x, s_spinner_dots[i].y, kSpinnerEraseRadius,
+    s_frame.fillCircle(s_spinner_dots[i].x, s_spinner_dots[i].y, kSpinnerEraseRadius,
                    config::kColorBlack);
     s_spinner_dots[i].drawn = false;
   }
 }
 
-void drawSpinnerDots() {
+void drawSpinnerDots(LGFX_Sprite s_frame) {
   constexpr float kDegToRad = 0.01745329252f;
   const float head_rad = s_spinner_angle_deg * kDegToRad;
 
@@ -184,7 +166,7 @@ void drawSpinnerDots() {
 
     const int fade = 255 - i * 22;
     const uint16_t color = tft.color565(0, fade, 0);
-    tft.fillSmoothCircle(x, y, kSpinnerDotRadius, color);
+    s_frame.fillSmoothCircle(x, y, kSpinnerDotRadius, color);
 
     s_spinner_dots[i].x = x;
     s_spinner_dots[i].y = y;
@@ -195,6 +177,7 @@ void drawSpinnerDots() {
 }  // namespace
 
 void statusScreenConnectingBegin(const char* ssid) {
+  LGFX_Sprite s_frame = frame_buffer::get_s_frame();
   const char* name = (ssid != nullptr && ssid[0] != '\0') ? ssid : "network";
   strncpy(s_connecting_ssid, name, sizeof(s_connecting_ssid) - 1);
   s_connecting_ssid[sizeof(s_connecting_ssid) - 1] = '\0';
@@ -203,21 +186,23 @@ void statusScreenConnectingBegin(const char* ssid) {
   for (auto& dot : s_spinner_dots) {
     dot.drawn = false;
   }
-  s_connecting_text_drawn = false;
   drawConnectingText();
-  drawSpinnerDots();
+  drawSpinnerDots(s_frame);
+  s_frame.pushSprite(0, 0);
 }
 
 void statusScreenConnectingTick() {
+  LGFX_Sprite s_frame = frame_buffer::get_s_frame();
   if (!s_connecting_text_drawn) {
     drawConnectingText();
   }
-  eraseSpinnerDots();
+  eraseSpinnerDots(s_frame);
   s_spinner_angle_deg += kSpinnerStepDeg;
   if (s_spinner_angle_deg >= 270.0f) {
     s_spinner_angle_deg -= 360.0f;
   }
-  drawSpinnerDots();
+  drawSpinnerDots(s_frame);
+  s_frame.pushSprite(0, 0);
 }
 
 void statusScreenPortal() {
