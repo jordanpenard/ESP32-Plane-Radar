@@ -18,6 +18,8 @@
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
 #include "ui/runway_overlay.h"
+#include "ui/frame_buffer.h"
+#include <esp_heap_caps.h>
 
 namespace lgfx_fonts = lgfx::v1::fonts;
 
@@ -60,10 +62,6 @@ float s_footer_vlw_size = 0.36f;
 
 int s_scale_label_max_w = 0;
 int s_scale_label_h = 0;
-
-lgfx::LovyanGFX* s_draw = &tft;
-LGFX_Sprite s_frame(&tft);
-bool s_frame_ready = false;
 
 char s_cached_scale_label[12] = {};
 bool s_cached_scale_label_valid = false;
@@ -115,8 +113,8 @@ size_t s_aircraft_display_track_replace_cursor = 0;
 
 class DrawScope {
  public:
-  explicit DrawScope(lgfx::LovyanGFX& gfx) : prev_(s_draw) { s_draw = &gfx; }
-  ~DrawScope() { s_draw = prev_; }
+  explicit DrawScope(lgfx::LovyanGFX& gfx) : prev_(frame_buffer::get_s_draw()) { frame_buffer::set_s_draw(&gfx); }
+  ~DrawScope() { frame_buffer::set_s_draw(prev_); }
 
  private:
   lgfx::LovyanGFX* prev_;
@@ -909,9 +907,9 @@ AltitudeTrend altitudeTrendState(const services::adsb::Aircraft& plane,
 uint16_t altitudeTrendColor(AltitudeTrend trend) {
   auto panelColor = [](uint8_t r, uint8_t g, uint8_t b) -> uint16_t {
     if (config::kDisplayRgbOrder) {
-      return s_draw->color565(b, g, r);
+      return frame_buffer::get_s_draw()->color565(b, g, r);
     }
-    return s_draw->color565(r, g, b);
+    return frame_buffer::get_s_draw()->color565(r, g, b);
   };
 
   switch (trend) {
@@ -992,7 +990,7 @@ bool beyondRingEdgeDotFromLatLon(float lat, float lon, int* out_x, int* out_y) {
 }
 
 void drawBeyondRingDot(int x, int y) {
-  s_draw->fillSmoothCircle(x, y, radar::kBeyondRingDotRadiusPx,
+  frame_buffer::get_s_draw()->fillSmoothCircle(x, y, radar::kBeyondRingDotRadiusPx,
                            radar::kColorAircraft);
 }
 
@@ -1065,7 +1063,7 @@ void drawHeadingTriangle(int cx, int cy, float heading_deg, uint16_t color) {
   const int wing_x = static_cast<int>(lroundf(cos_h * radar::kAircraftTailHalfPx));
   const int wing_y = static_cast<int>(lroundf(sin_h * radar::kAircraftTailHalfPx));
 
-  s_draw->fillTriangle(tip_x, tip_y, base_x + wing_x, base_y + wing_y,
+  frame_buffer::get_s_draw()->fillTriangle(tip_x, tip_y, base_x + wing_x, base_y + wing_y,
                        base_x - wing_x, base_y - wing_y, color);
 }
 
@@ -1087,17 +1085,17 @@ void drawSpeedVector(int cx, int cy, float heading_deg, float track_deg,
   if (ex == tip_x && ey == tip_y) {
     return;
   }
-  s_draw->drawWideLine(tip_x, tip_y, ex, ey, radar::kAircraftTrackLineHalfWidth,
+  frame_buffer::get_s_draw()->drawWideLine(tip_x, tip_y, ex, ey, radar::kAircraftTrackLineHalfWidth,
                        color);
 }
 
 void applyTagStyle() {
   if (s_tag_use_vlw) {
-    displayFontSetSmoothSize(*s_draw,
+    displayFontSetSmoothSize(*frame_buffer::get_s_draw(),
                              s_tag_vlw_size * configuredTextScale());
   } else {
-    displayFontSetBitmap(*s_draw, s_tag_gfx);
-    applyBitmapTextScale(*s_draw);
+    displayFontSetBitmap(*frame_buffer::get_s_draw(), s_tag_gfx);
+    applyBitmapTextScale(*frame_buffer::get_s_draw());
   }
 }
 
@@ -1156,19 +1154,19 @@ int measureTagBlockWidth(size_t index, const services::adsb::Aircraft& plane,
   const char* identity =
       plane.route[0] != '\0' ? plane.route : plane.callsign;
   if (identity[0] != '\0') {
-    const int w = s_draw->textWidth(identity);
+    const int w = frame_buffer::get_s_draw()->textWidth(identity);
     if (w > max_w) {
       max_w = w;
     }
   }
   if (plane.type[0] != '\0') {
-    const int w = s_draw->textWidth(plane.type);
+    const int w = frame_buffer::get_s_draw()->textWidth(plane.type);
     if (w > max_w) {
       max_w = w;
     }
   }
   if (altitude_text != nullptr && altitude_text[0] != '\0') {
-    const int w = s_draw->textWidth(altitude_text);
+    const int w = frame_buffer::get_s_draw()->textWidth(altitude_text);
     if (w > max_w) {
       max_w = w;
     }
@@ -1186,6 +1184,9 @@ int measureTagBlockWidth(size_t index, const services::adsb::Aircraft& plane,
 void drawAircraftTag(size_t index, int x, int y,
                      const services::adsb::Aircraft& plane,
                      const char* altitude_text, uint16_t altitude_color) {
+
+  lgfx::LovyanGFX* s_draw = frame_buffer::get_s_draw();
+
   initTagLabelMetrics();
   applyTagStyle();
 
@@ -1231,6 +1232,7 @@ void drawAircraftTag(size_t index, int x, int y,
 }
 
 void applyFooterStyle() {
+  lgfx::LovyanGFX* s_draw = frame_buffer::get_s_draw();
   initFooterMetrics();
   if (s_footer_use_vlw) {
     displayFontSetSmoothSize(*s_draw,
@@ -1248,7 +1250,7 @@ void fitFooterText(const char* source, char* out, size_t out_len,
   }
   strncpy(out, source != nullptr ? source : "", out_len - 1);
   out[out_len - 1] = '\0';
-  if (s_draw->textWidth(out) <= max_width) {
+  if (frame_buffer::get_s_draw()->textWidth(out) <= max_width) {
     return;
   }
 
@@ -1261,7 +1263,7 @@ void fitFooterText(const char* source, char* out, size_t out_len,
       out[length - 2] = '.';
       out[length - 1] = '.';
     }
-    if (s_draw->textWidth(out) <= max_width) {
+    if (frame_buffer::get_s_draw()->textWidth(out) <= max_width) {
       return;
     }
   }
@@ -1274,6 +1276,7 @@ void drawFooterLine(const char* text, int y, int max_width, uint16_t color) {
   applyFooterStyle();
   char fitted[32] = {};
   fitFooterText(text, fitted, sizeof(fitted), max_width);
+  lgfx::LovyanGFX* s_draw = frame_buffer::get_s_draw();
   s_draw->setTextDatum(textdatum_t::top_center);
   s_draw->setTextColor(color, radar::kColorFooterBackground);
   s_draw->drawString(fitted, radar::kCenterX, y);
@@ -1284,6 +1287,7 @@ void drawHealthBadge() {
     return;
   }
 
+  lgfx::LovyanGFX* s_draw = frame_buffer::get_s_draw();
   const char* badge_text = nullptr;
   uint16_t badge_bg = radar::kColorBackground;
   if (!services::weather::valid()) {
@@ -1325,6 +1329,7 @@ void drawFooter() {
   constexpr int xc = config::kDisplayHeight / 2;
   constexpr int dy = radar::kFooterTopY - xc;
   constexpr int foot_line_x0 = xc - sqrt((radar::kGridOuterRadius * radar::kGridOuterRadius) - (dy * dy));
+  lgfx::LovyanGFX* s_draw = frame_buffer::get_s_draw();
 
   // The trapezoid follows the narrowing bottom edge of the round panel.
   s_draw->fillTriangle(28, radar::kFooterTopY, 
@@ -1534,6 +1539,7 @@ void drawAircraft() {
 }
 
 void applyCardinalStyle() {
+  lgfx::LovyanGFX* s_draw = frame_buffer::get_s_draw();
   if (s_cardinal_use_vlw) {
     displayFontSetSmoothSize(*s_draw,
                              s_cardinal_vlw_size * configuredTextScale());
@@ -1544,6 +1550,7 @@ void applyCardinalStyle() {
 }
 
 void applyScaleStyle() {
+  lgfx::LovyanGFX* s_draw = frame_buffer::get_s_draw();
   if (s_scale_use_vlw) {
     displayFontSetSmoothSize(*s_draw,
                              s_scale_vlw_size * configuredTextScale());
@@ -1554,6 +1561,7 @@ void applyScaleStyle() {
 }
 
 void drawCardinalLabel(const char* text, int x, int y, textdatum_t datum) {
+  lgfx::LovyanGFX* s_draw = frame_buffer::get_s_draw();
   applyCardinalStyle();
   s_draw->setTextDatum(datum);
   s_draw->setTextColor(radar::kColorLabel, radar::kColorBackground);
@@ -1561,6 +1569,7 @@ void drawCardinalLabel(const char* text, int x, int y, textdatum_t datum) {
 }
 
 void drawScaleLabelWithBackground(const char* text, int x, int y) {
+  lgfx::LovyanGFX* s_draw = frame_buffer::get_s_draw();
   applyScaleStyle();
   s_draw->setTextDatum(textdatum_t::middle_right);
 
@@ -1857,7 +1866,20 @@ void updateFooterCacheIfNeeded() {
       s_cached_weather_line_color = radar::kColorTagType;
     }
   } else if (heap_enabled) {
-      sprintf(s_cached_weather_line, "Heap %dkB/%dkB", ESP.getMaxAllocHeap()/1024, ESP.getFreeHeap()/1024); 
+
+      // Fast Internal SRAM (Where LovyanGFX should live)
+      size_t freeSRAM = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      size_t largestSRAMBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+      #ifdef BOARD_HAS_PSRAM
+      // External PSRAM (Where WiFiClientSecure / TLS should live)
+      size_t freePSRAM = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      size_t largestPSRAMBlock = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      sprintf(s_cached_weather_line, "%d/%dkB %d/%dkB", freeSRAM/1024, largestSRAMBlock/1024, freePSRAM/1024, largestPSRAMBlock/1024); 
+      #else
+      sprintf(s_cached_weather_line, "Heap: %dkB(%dkB)", freeSRAM/1024, largestSRAMBlock/1024); 
+      #endif
+
       s_cached_weather_line_color = radar::kColorTagType;
   } else {
     s_cached_weather_line[0] = '\0';
@@ -1870,7 +1892,7 @@ void updateFooterCacheIfNeeded() {
       services::weather::formatDateTimeAtMillis(
           adsb_fix_ms, with_seconds, sizeof(with_seconds), true);
       applyFooterStyle();
-      if (s_draw->textWidth(with_seconds) <= 128) {
+      if (frame_buffer::get_s_draw()->textWidth(with_seconds) <= 128) {
         strncpy(s_cached_date_time, with_seconds, sizeof(s_cached_date_time) - 1);
         s_cached_date_time[sizeof(s_cached_date_time) - 1] = '\0';
       } else {
@@ -1886,7 +1908,7 @@ void updateFooterCacheIfNeeded() {
     services::weather::formatDateTimeLine(with_seconds, sizeof(with_seconds),
                                           true, display_delay_ms);
     applyFooterStyle();
-    if (s_draw->textWidth(with_seconds) <= 128) {
+    if (frame_buffer::get_s_draw()->textWidth(with_seconds) <= 128) {
       strncpy(s_cached_date_time, with_seconds, sizeof(s_cached_date_time) - 1);
       s_cached_date_time[sizeof(s_cached_date_time) - 1] = '\0';
     } else {
@@ -1917,7 +1939,7 @@ void drawGridRing(int cx, int cy, int r, uint16_t color) {
   const int thickness =
       std::max(1, static_cast<int>(radar::kGridStrokeHalfWidth * 2.0f));
   for (int i = 0; i < thickness && r - i > 0; ++i) {
-    s_draw->drawCircle(cx, cy, r - i, color);
+    frame_buffer::get_s_draw()->drawCircle(cx, cy, r - i, color);
   }
 }
 
@@ -1929,14 +1951,14 @@ void drawRings(int cx, int cy, int outer_radius) {
 }
 
 void drawCrosshairs(int cx, int cy, int radius, uint16_t color) {
-  s_draw->drawWideLine(cx, cy - radius, cx, cy + radius,
+  frame_buffer::get_s_draw()->drawWideLine(cx, cy - radius, cx, cy + radius,
                        radar::kGridStrokeHalfWidth, color);
-  s_draw->drawWideLine(cx - radius, cy, cx + radius, cy,
+  frame_buffer::get_s_draw()->drawWideLine(cx - radius, cy, cx + radius, cy,
                        radar::kGridStrokeHalfWidth, color);
 }
 
 void drawCenterDot(int cx, int cy) {
-  s_draw->fillSmoothCircle(cx, cy, radar::kCenterDotRadius, radar::kColorCenter);
+  frame_buffer::get_s_draw()->fillSmoothCircle(cx, cy, radar::kCenterDotRadius, radar::kColorCenter);
 }
 
 void drawCardinalLabels() {
@@ -1981,23 +2003,11 @@ void drawStaticGrid(Gfx& gfx) {
   gfx.setTextDatum(textdatum_t::top_left);
 }
 
-bool ensureFrameSprite() {
-  if (s_frame_ready) {
-    return true;
-  }
-  s_frame.setColorDepth(16);
-  if (!s_frame.createSprite(radar::kSize, radar::kSize)) {
-    Serial.println("radar: frame sprite alloc failed");
-    return false;
-  }
-  s_frame_ready = true;
-  return true;
-}
-
 // Double-buffered frame: composite the grid AND aircraft into the off-screen
 // sprite, then blit it to the panel in a single pushSprite. Because the panel
 // is updated in one pass, labels never show an erase/redraw gap — no flicker.
 void renderFrame() {
+  LGFX_Sprite s_frame = frame_buffer::get_s_frame();
   drawStaticGrid(s_frame);  // opens its own DrawScope(s_frame)
   {
     const DrawScope scope(s_frame);
@@ -2015,29 +2025,13 @@ void radarDisplayDraw() {
   initPalette();
   initLabelMetrics();
 
-  if (ensureFrameSprite()) {
-    renderFrame();
-    return;
-  }
-
-  // Fallback when the sprite can't be allocated: draw straight to the panel.
-  const DrawScope scope(tft);
-  drawStaticGrid(tft);
-  drawAircraft();
-  drawFooter();
-  drawHealthBadge();
-  tft.setTextDatum(textdatum_t::top_left);
+  renderFrame();
 }
 
 void radarDisplayRefreshAircraft() {
   initPalette();
 
-  if (ensureFrameSprite()) {
-    renderFrame();
-    return;
-  }
-
-  radarDisplayDraw();
+  renderFrame();
 }
 
 }  // namespace ui
