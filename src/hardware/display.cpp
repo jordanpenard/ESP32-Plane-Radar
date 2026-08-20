@@ -1,4 +1,5 @@
 #include "hardware/display.h"
+#include "ui/frame_buffer.h"
 
 #include "hardware/display_font.h"
 
@@ -10,4 +11,7 @@ void displayInit() {
   tft.setBrightness(255);
   tft.setTextWrap(false);
   displayFontInit();
+  while(!frame_buffer::ensureFrameSprite()) {
+    delay(10);
+  }
 }

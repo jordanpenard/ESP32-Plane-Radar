@@ -158,6 +158,18 @@ void setup() {
   delay(500);
   Serial.println();
   Serial.println("Plane Radar");
+  
+  #ifdef BOARD_HAS_PSRAM
+  // Check External PSRAM
+  if (psramInit()) {
+      Serial.println("PSRAM Initialization: SUCCESS");
+      Serial.printf("Total PSRAM Size:    %d bytes\n", ESP.getPsramSize());
+      Serial.printf("Free PSRAM Available: %d bytes\n", ESP.getFreePsram());
+  } else {
+      Serial.println("PSRAM Initialization: FAILED");
+  }
+  #endif
+
   Serial.printf("boot: free heap=%lu largest=%u\n",
                 static_cast<unsigned long>(ESP.getFreeHeap()),
                 static_cast<unsigned>(
@@ -172,7 +184,10 @@ void setup() {
   esp_task_wdt_add(NULL);
 
   bootButtonInit();
+
+  // Init the display and it's frame buffer
   displayInit();
+
   if (wifiShowsSetupScreenOnBoot()) {
     statusScreenPortal();
   }
