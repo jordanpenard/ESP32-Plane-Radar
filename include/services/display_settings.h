@@ -18,6 +18,7 @@ constexpr int kBrightnessDefaultPercent = 100;
 /** Load persistent display and OTA settings from NVS. */
 void init();
 
+const char* posix_tz();
 const char* footerConfig();
 bool footerEnabled();
 bool weatherEnabled();
@@ -54,7 +55,8 @@ const char* otaPassword();
  * Store web-portal values. An empty OTA password keeps the current password so
  * the portal never needs to echo the stored secret into its HTML.
  */
-void saveFromPortal(const char* footer_config,
+void saveFromPortal(const char* posix_tz_config,
+                    const char* footer_config,
                     const char* fahrenheit_checkbox,
                     bool use_miles,
                     const char* altitude_offset_value,

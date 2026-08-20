@@ -152,6 +152,7 @@ String diagnosticsHtml() {
 }
 
 constexpr int kCoordParamLen = 20;
+constexpr int kPosixTzParamLen = 64;
 constexpr char kLatitudeInputAttrs[] =
     "type=\"number\" step=\"0.000001\" min=\"-90\" max=\"90\"";
 constexpr char kLongitudeInputAttrs[] =
@@ -199,6 +200,7 @@ WiFiManagerParameter s_param_lat("radar_lat", "Latitude (deg)", "0",
                                 kCoordParamLen, kLatitudeInputAttrs);
 WiFiManagerParameter s_param_lon("radar_lon", "Longitude (deg)", "0",
                                 kCoordParamLen, kLongitudeInputAttrs);
+WiFiManagerParameter s_posix_tz("posix_tz", "POSIX timezone", config::kDefaultTimeZone, kPosixTzParamLen);
 char s_miles_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_miles("use_miles", "Display distances in miles", "T", 2,
                                    s_miles_checkbox_attrs, WFM_LABEL_AFTER);
@@ -507,6 +509,7 @@ void refreshPortalParamDefaults() {
   snprintf(lon_buf, sizeof(lon_buf), "%.6f", services::location::lon());
   s_param_lat.setValue(lat_buf, kCoordParamLen);
   s_param_lon.setValue(lon_buf, kCoordParamLen);
+  s_posix_tz.setValue(services::settings::posix_tz(), kPosixTzParamLen);
   refreshCheckboxAttrs(s_miles_checkbox_attrs,
                        sizeof(s_miles_checkbox_attrs),
                        ui::radar::useMiles());
@@ -605,6 +608,7 @@ void onPortalParamsSaved() {
   }
 
   services::settings::saveFromPortal(
+      s_posix_tz.getValue(),
       footer_config_value.c_str(),
       s_param_fahrenheit.getValue(), services::units::useImperialDistance(),
       s_param_altitude_offset.getValue(),
@@ -627,6 +631,7 @@ void onPortalParamsSaved() {
 void savePortalParamsFromRequest(WebServer& web) {
   const String latitude = web.arg("radar_lat");
   const String longitude = web.arg("radar_lon");
+  const String posix_tz = web.arg("posix_tz");
   const String miles = web.arg("use_miles");
   const String runways = web.arg("show_runways");
   const String range_idx = web.arg("radar_range_idx");
@@ -656,6 +661,7 @@ void savePortalParamsFromRequest(WebServer& web) {
   ui::radar::saveRunwaysFromPortal(runways.c_str());
   ui::radar::saveRangeIndexFromPortal(range_idx.c_str());
   services::settings::saveFromPortal(
+      posix_tz.c_str(),
       footer_config.c_str(),
       fahrenheit.c_str(),
       services::units::useImperialDistance(), altitude_offset.c_str(),
@@ -759,6 +765,7 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_section_location);
   wm.addParameter(&s_param_lat);
   wm.addParameter(&s_param_lon);
+  wm.addParameter(&s_posix_tz);
 
   wm.addParameter(&s_section_altitude);
   wm.addParameter(&s_param_altitude_offset);
@@ -970,10 +977,67 @@ void prepareSta() {
   WiFi.setAutoReconnect(true);
 }
 
+const char* getDisconnectReason(uint8_t reason) {
+  switch (reason) {
+    case 1:   return "UNSPECIFIED (General failure)";
+    case 2:   return "AUTH_EXPIRE (Authentication expired / Timeout)";
+    case 3:   return "AUTH_LEAVE (Left network deliberately)";
+    case 4:   return "ASSOC_EXPIRE (Association expired / Bad signal handshake)";
+    case 5:   return "ASSOC_TOOMANY (AP is out of IP slots / overloaded)";
+    case 6:   return "NOT_AUTHTED (Trying to act before authenticating)";
+    case 7:   return "NOT_ASSOCED (Trying to send data before associating)";
+    case 8:   return "ASSOC_LEAVE (Device left network)";
+    case 15:  return "4WAY_HANDSHAKE_TIMEOUT (Wrong Password or terrible signal drop)";
+    case 201: return "NO_AP_FOUND (SSID out of range, hidden, or on 5GHz which S3 cannot see)";
+    case 202: return "AUTH_FAIL (Wrong password / Encryption type mismatch)";
+    case 203: return "ASSOC_FAIL (AP rejected connection request)";
+    case 204: return "HANDSHAKE_TIMEOUT (Key exchange failed / Packet dropped mid-air)";
+    case 205: return "CONNECTION_FAIL / AP_UNABLE_TO_HANDLE (Likely brownout/hardware failure)";
+    default:  return "UNKNOWN_REASON_CODE";
+  }
+}
+
+void wifiDebug(const String& ssid) {
+  // Set up event listener hooks
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
+    Serial.printf("[EVENT] Connected to Access Point! RSSI: %d dBm\n", WiFi.RSSI());
+  }, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
+
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
+    Serial.print("[EVENT] IP Address Obtained: ");
+    Serial.println(WiFi.localIP());
+  }, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
+
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
+    uint8_t reason = info.wifi_sta_disconnected.reason;
+    Serial.printf("\n[ALERT] Wi-Fi Disconnected!\n");
+    Serial.printf(" --> Numeric Code: %d\n", reason);
+    Serial.printf(" --> Meaning: %s\n\n", getDisconnectReason(reason));
+  }, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
+  // Run an immediate Wi-Fi Scan to check raw environment reception
+  Serial.println("Running target network environment sweep...");
+  // Arguments: (async, show_hidden, passive, max_ms_per_chan, channel)
+  int n = WiFi.scanNetworks(false, true, false, 300, 0); 
+  bool targetFound = false;
+  for (int i = 0; i < n; ++i) {
+    if (WiFi.SSID(i) == ssid) {
+      targetFound = true;
+      Serial.printf("FOUND TARGET! SSID: %s | RSSI (Signal): %d dBm | Channel: %d\n", 
+                    WiFi.SSID(i).c_str(), WiFi.RSSI(i), WiFi.channel(i));
+    }
+  }
+  if (!targetFound) {
+    Serial.println("CRITICAL: Your router SSID was not detected at all in the scan!");
+  }
+}
+
 void startStaConnect(const String& ssid, const String& pass) {
   prepareSta();
   if (ssid.length() > 0) {
-    WiFi.begin(ssid.c_str(), pass.c_str());
+    //wifiDebug(ssid);
+    // The '0' is for channel (auto), the 'nullptr' is for BSSID (any), and 'true' enables hidden connection
+    WiFi.begin(ssid.c_str(), pass.c_str(), 0, nullptr, true); 
   } else {
     WiFi.begin();
   }

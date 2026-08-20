@@ -12,6 +12,7 @@ namespace services::settings {
 namespace {
 
 constexpr char kPrefsNamespace[] = "display";
+constexpr char kKeyPosixTz[] = "posixTz";
 constexpr char kKeyFooter[] = "footer";
 constexpr char kKeyFahrenheit[] = "tempF";
 constexpr char kKeyAltitudeMeters[] = "altM";
@@ -32,6 +33,7 @@ constexpr char kKeyAutoDim[] = "autoDim";
 constexpr char kKeyBrightness[] = "brightPct";
 
 char s_ota_password[kOtaPasswordMaxLen + 1] = {};
+char s_posix_tz_config[65] = {};
 char s_footer_config[13] = {};
 bool s_temperature_fahrenheit = false;
 bool s_altitude_meters = false;
@@ -207,6 +209,8 @@ bool parseAltitudeOffset(const char* value, float* result) {
 void loadDefaults() {
   copyCleanText(config::kDefaultOtaPassword, s_ota_password,
                 sizeof(s_ota_password));
+  copyCleanText(config::kDefaultTimeZone, s_posix_tz_config,
+                sizeof(s_posix_tz_config));
   copyCleanText("none", s_footer_config,
                 sizeof(s_footer_config));
   s_temperature_fahrenheit = false;
@@ -232,6 +236,8 @@ void persist() {
   if (!prefs.begin(kPrefsNamespace, false)) {
     return;
   }
+
+  prefs.putString(kKeyPosixTz, s_posix_tz_config);
   prefs.putString(kKeyFooter, s_footer_config);
   prefs.putBool(kKeyFahrenheit, s_temperature_fahrenheit);
   prefs.putBool(kKeyAltitudeMeters, s_altitude_meters);
@@ -262,6 +268,13 @@ void init() {
   Preferences prefs;
   if (!prefs.begin(kPrefsNamespace, true)) {
     return;
+  }
+
+  String tz_value = prefs.getString(kKeyPosixTz, config::kDefaultTimeZone);
+  copyCleanText(tz_value.c_str(), s_posix_tz_config, sizeof(s_posix_tz_config));
+  if (s_posix_tz_config[0] == '\0') {
+    copyCleanText(config::kDefaultTimeZone, s_posix_tz_config,
+                  sizeof(s_posix_tz_config));
   }
 
   String footer_value = prefs.getString(kKeyFooter, "none");
@@ -302,6 +315,8 @@ void init() {
   }
   prefs.end();
 }
+
+const char* posix_tz() { return s_posix_tz_config; }
 
 const char* footerConfig() { return s_footer_config; }
 
@@ -353,7 +368,8 @@ int brightnessPercent() { return s_brightness_percent; }
 
 const char* otaPassword() { return s_ota_password; }
 
-void saveFromPortal(const char* footer_config,
+void saveFromPortal(const char* posix_tz_config,
+                    const char* footer_config,
                     const char* fahrenheit_checkbox,
                     bool use_miles,
                     const char* altitude_offset_value,
@@ -372,6 +388,12 @@ void saveFromPortal(const char* footer_config,
                     const char* brightness_percent_value,
                     const char* ota_password_value) {
 
+  char posiz_tz[65] = {};
+  copyCleanText(posix_tz_config, posiz_tz, sizeof(posiz_tz));
+  if (posiz_tz[0] != '\0') {
+    strncpy(s_posix_tz_config, posiz_tz, sizeof(s_posix_tz_config) - 1);
+    s_posix_tz_config[sizeof(s_posix_tz_config) - 1] = '\0';
+  }
   char footer[13] = {};
   copyCleanText(footer_config, footer, sizeof(footer));
   if (footer[0] != '\0') {
@@ -423,6 +445,7 @@ void saveFromPortal(const char* footer_config,
   }
 
   persist();
+  Serial.printf("Posix Timezone: %s", s_posix_tz_config);
   Serial.printf("Footer: %s, altitude: %s, text: %d%%\n",
                 s_footer_config,
                 s_altitude_meters ? "m" : "ft", s_text_scale_percent);

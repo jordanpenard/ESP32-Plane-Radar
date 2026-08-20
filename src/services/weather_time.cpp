@@ -341,7 +341,7 @@ bool fetch(double latitude, double longitude) {
 
 void begin() {
   if (!s_started) {
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    configTzTime(services::settings::posix_tz(), "pool.ntp.org", "time.nist.gov");
     s_started = true;
   }
 }
@@ -426,9 +426,8 @@ void formatWeatherLine(char* out, size_t out_len, int max_width) {
 
 void formatLocalDateTime(time_t utc_time, bool include_seconds, char* out,
                          size_t out_len) {
-  const time_t local_now = utc_time + s_utc_offset_seconds;
   tm local = {};
-  gmtime_r(&local_now, &local);
+  localtime_r(&utc_time, &local);
   const int year = local.tm_year + 1900;
   const int month = local.tm_mon + 1;
   const int day = local.tm_mday;
