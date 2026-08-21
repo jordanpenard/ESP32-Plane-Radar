@@ -240,6 +240,11 @@ WiFiManagerParameter s_param_footer_wifi(
     "show_footer_wifi", "Show wifi info in footer", "T", 2,
     s_footer_wifi_checkbox_attrs, WFM_LABEL_AFTER);
 
+char s_portal_only_on_boot_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_portal_only_on_boot(
+  "portal_only_on_boot", "Configuration portal only active for 30s on boot (uncheck for always on)", "T", 2, 
+  s_portal_only_on_boot_checkbox_attrs, WFM_LABEL_AFTER);
+
 char s_fahrenheit_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_fahrenheit(
     "temp_f", "Temperature in Fahrenheit", "T", 2,
@@ -411,8 +416,8 @@ constexpr char kOtaPasswordAttrs[] =
     "type=\"password\" autocomplete=\"new-password\" "
     "placeholder=\"leave blank to keep current\"";
 WiFiManagerParameter s_param_ota_password(
-    "ota_password", "OTA password (user: admin)", "", kOtaPasswordParamLen,
-    kOtaPasswordAttrs);
+    "ota_password", "<br><br><label class=\"wfm-lbl-b\"></label>OTA password (user: admin)", 
+    "", kOtaPasswordParamLen, kOtaPasswordAttrs, WFM_LABEL_BEFORE);
 
 WiFiManagerParameter s_param_diag_link(
   "<div style=\"margin-top:.75rem\"><a href=\"/diag\">Diagnostics</a></div>");
@@ -537,6 +542,10 @@ void refreshPortalParamDefaults() {
                        sizeof(s_footer_wifi_checkbox_attrs),
                        services::settings::footerWifiEnabled());
   s_param_footer_wifi.setValue("T", 2);
+  refreshCheckboxAttrs(s_portal_only_on_boot_checkbox_attrs,
+                       sizeof(s_portal_only_on_boot_checkbox_attrs),
+                       services::settings::portalOnlyOnBoot());
+  s_param_portal_only_on_boot.setValue("T", 2);
   refreshCheckboxAttrs(s_fahrenheit_checkbox_attrs,
                        sizeof(s_fahrenheit_checkbox_attrs),
                        services::settings::temperatureFahrenheit());
@@ -620,6 +629,7 @@ void onPortalParamsSaved() {
   services::settings::saveFromPortal(
       s_param_footer_time.getValue(), s_param_footer_weather.getValue(),
       s_param_footer_heap.getValue(), s_param_footer_wifi.getValue(),
+      s_param_portal_only_on_boot.getValue(),
       s_posix_tz.getValue(),
       s_param_fahrenheit.getValue(), services::units::useImperialDistance(),
       s_param_altitude_offset.getValue(),
@@ -650,6 +660,7 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String footer_weather = web.arg("show_footer_weather");
   const String footer_heap = web.arg("show_footer_heap");
   const String footer_wifi = web.arg("show_footer_wifi");
+  const String portal_only_on_boot = web.arg("portal_only_on_boot");
   const String fahrenheit = web.arg("temp_f");
   const String altitude_offset = web.arg("alt_offset");
   const String altitude_filter_enabled = web.arg("alt_filter_enabled");
@@ -677,6 +688,7 @@ void savePortalParamsFromRequest(WebServer& web) {
   services::settings::saveFromPortal(
       footer_time.c_str(), footer_weather.c_str(), 
       footer_heap.c_str(), footer_wifi.c_str(), 
+      portal_only_on_boot.c_str(),
       posix_tz.c_str(),
       fahrenheit.c_str(),
       services::units::useImperialDistance(), altitude_offset.c_str(),
@@ -830,6 +842,7 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_hint_interp);
 
   wm.addParameter(&s_section_advanced);
+  wm.addParameter(&s_param_portal_only_on_boot);
   wm.addParameter(&s_param_ota_password);
   wm.addParameter(&s_param_diag_link);
   wm.addParameter(&s_param_back_link_bottom);
@@ -1299,11 +1312,15 @@ void wifiStartBootAutoPortal() {
   s_last_portal_activity_ms = now;
   s_boot_auto_portal_started_ms = now;
   s_boot_auto_portal_deadline_ms = now + config::kBootPortalAutoWindowMs;
-  s_boot_auto_portal_pending = true;
+  s_boot_auto_portal_pending = services::settings::portalOnlyOnBoot();
   s_lan_portal_wanted = true;
   startLanWebPortal(/*enable_mdns=*/false);
-  Serial.printf("LAN portal: auto-enabled for %lus after boot\n",
-                config::kBootPortalAutoWindowMs / 1000UL);
+  if (services::settings::portalOnlyOnBoot()) {
+    Serial.printf("LAN portal: auto-enabled for %lus after boot\n",
+                  config::kBootPortalAutoWindowMs / 1000UL);
+  } else {
+    Serial.printf("LAN portal: enabled forever\n");
+  }
 }
 
 bool wifiConsumeAutoPortalTimeout() {

@@ -211,10 +211,11 @@ void loop() {
   esp_task_wdt_reset();
   handleBootButton();
   wifiLoop();
-  if (wifiConsumeAutoPortalTimeout()) {
+
+  if (services::settings::portalOnlyOnBoot() && wifiConsumeAutoPortalTimeout()) {
     onLanPortalToggled();
   }
-  if (wifiConsumeWebExitRequest() && wifiLanPortalActive()) {
+  if (services::settings::portalOnlyOnBoot() && wifiConsumeWebExitRequest() && wifiLanPortalActive()) {
     wifiToggleLanPortal();
     onLanPortalToggled();
   }
@@ -224,7 +225,7 @@ void loop() {
     return;
   }
 
-  if (wifiLanPortalActive()) {
+  if (services::settings::portalOnlyOnBoot() && wifiLanPortalActive()) {
     // Aircraft/weather monitoring is paused while the LAN portal is on
     // (see onLanPortalToggled()); nothing else to do here but let the
     // portal's own HTTP handling (driven via wifiLoop() above) run and
