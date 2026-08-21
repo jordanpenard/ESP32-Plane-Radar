@@ -13,8 +13,10 @@ namespace {
 
 constexpr char kPrefsNamespace[] = "display";
 constexpr char kKeyPosixTz[] = "posixTz";
-constexpr char kKeyFooter[] = "footer";
-constexpr char kKeyWeather[] = "weather";
+constexpr char kKeyFooterTime[] = "f_time";
+constexpr char kKeyFooterWeather[] = "f_weather";
+constexpr char kKeyFooterHeap[] = "f_heap";
+constexpr char kKeyFooterWifi[] = "f_wifi";
 constexpr char kKeyFahrenheit[] = "tempF";
 constexpr char kKeyAltitudeMeters[] = "altM";
 constexpr char kKeyAltitudeOffsetFeet[] = "altOffFt";
@@ -34,8 +36,10 @@ constexpr char kKeyAutoDim[] = "autoDim";
 constexpr char kKeyBrightness[] = "brightPct";
 
 char s_ota_password[kOtaPasswordMaxLen + 1] = {};
-bool s_footer_enabled = true;
-bool s_weather_enabled = true;
+bool s_footer_time_enabled = true;
+bool s_footer_weather_enabled = true;
+bool s_footer_heap_enabled = true;
+bool s_footer_wifi_enabled = true;
 char s_posix_tz_config[65] = {};
 bool s_temperature_fahrenheit = false;
 bool s_altitude_meters = false;
@@ -211,8 +215,10 @@ bool parseAltitudeOffset(const char* value, float* result) {
 void loadDefaults() {
   copyCleanText(config::kDefaultOtaPassword, s_ota_password,
                 sizeof(s_ota_password));
-  s_footer_enabled = true;
-  s_weather_enabled = true;
+  s_footer_time_enabled = true;
+  s_footer_weather_enabled = true;
+  s_footer_heap_enabled = true;
+  s_footer_wifi_enabled = true;
   copyCleanText(config::kDefaultTimeZone, s_posix_tz_config,
                 sizeof(s_posix_tz_config));
   s_temperature_fahrenheit = false;
@@ -238,8 +244,10 @@ void persist() {
   if (!prefs.begin(kPrefsNamespace, false)) {
     return;
   }
-  prefs.putBool(kKeyFooter, s_footer_enabled);
-  prefs.putBool(kKeyWeather, s_weather_enabled);
+  prefs.putBool(kKeyFooterTime, s_footer_time_enabled);
+  prefs.putBool(kKeyFooterWeather, s_footer_weather_enabled);
+  prefs.putBool(kKeyFooterHeap, s_footer_heap_enabled);
+  prefs.putBool(kKeyFooterWifi, s_footer_wifi_enabled);
   prefs.putString(kKeyPosixTz, s_posix_tz_config);
   prefs.putBool(kKeyFahrenheit, s_temperature_fahrenheit);
   prefs.putBool(kKeyAltitudeMeters, s_altitude_meters);
@@ -272,8 +280,10 @@ void init() {
     return;
   }
 
-  s_footer_enabled = prefs.getBool(kKeyFooter, true);
-  s_weather_enabled = prefs.getBool(kKeyWeather, true);
+  s_footer_time_enabled = prefs.getBool(kKeyFooterTime, true);
+  s_footer_weather_enabled = prefs.getBool(kKeyFooterWeather, true);
+  s_footer_heap_enabled = prefs.getBool(kKeyFooterHeap, true);
+  s_footer_wifi_enabled = prefs.getBool(kKeyFooterWifi, true);
 
   String tz_value = prefs.getString(kKeyPosixTz, config::kDefaultTimeZone);
   copyCleanText(tz_value.c_str(), s_posix_tz_config, sizeof(s_posix_tz_config));
@@ -315,9 +325,13 @@ void init() {
   prefs.end();
 }
 
-bool footerEnabled() { return s_footer_enabled; }
+bool footerTimeEnabled() { return s_footer_time_enabled; }
 
-bool weatherEnabled() { return s_weather_enabled; }
+bool footerWeatherEnabled() { return s_footer_weather_enabled; }
+
+bool footerHeapEnabled() { return s_footer_heap_enabled; }
+
+bool footerWifiEnabled() { return s_footer_wifi_enabled; }
 
 const char* posix_tz() { return s_posix_tz_config; }
 
@@ -363,7 +377,8 @@ int brightnessPercent() { return s_brightness_percent; }
 
 const char* otaPassword() { return s_ota_password; }
 
-void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
+void saveFromPortal(const char* footer_time_checkbox, const char* footer_weather_checkbox,
+                    const char* footer_heap_checkbox, const char* footer_wifi_checkbox,
                     const char* posix_tz_config,
                     const char* fahrenheit_checkbox,
                     bool use_miles,
@@ -382,8 +397,10 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
                     const char* auto_dim_checkbox,
                     const char* brightness_percent_value,
                     const char* ota_password_value) {
-  s_footer_enabled = checkboxChecked(footer_checkbox);
-  s_weather_enabled = checkboxChecked(weather_checkbox);
+  s_footer_time_enabled = checkboxChecked(footer_time_checkbox);
+  s_footer_weather_enabled = checkboxChecked(footer_weather_checkbox);
+  s_footer_heap_enabled = checkboxChecked(footer_heap_checkbox);
+  s_footer_wifi_enabled = checkboxChecked(footer_wifi_checkbox);
   char posiz_tz[65] = {};
   copyCleanText(posix_tz_config, posiz_tz, sizeof(posiz_tz));
   if (posiz_tz[0] != '\0') {
@@ -436,9 +453,12 @@ void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
 
   persist();
   Serial.printf("Posix Timezone: %s", s_posix_tz_config);
-  Serial.printf("Display footer: %s, weather: %s, altitude: %s, text: %d%%\n",
-                s_footer_enabled ? "on" : "off",
-                s_weather_enabled ? "on" : "off",
+  Serial.printf("Display footer: Time %s, Weather: %s, Heap: %s, Wifi: %s\n",
+                s_footer_time_enabled ? "on" : "off",
+                s_footer_weather_enabled ? "on" : "off",
+                s_footer_heap_enabled ? "on" : "off",
+                s_footer_wifi_enabled ? "on" : "off");
+  Serial.printf("Display altitude: %s, text: %d%%\n",
                 s_altitude_meters ? "m" : "ft", s_text_scale_percent);
   Serial.printf("Altitude offset: %.1f ft\n", s_altitude_offset_feet);
   Serial.printf("Altitude filter: %s, mode: %s, threshold: %.1f ft\n",

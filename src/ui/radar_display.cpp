@@ -20,6 +20,7 @@
 #include "ui/runway_overlay.h"
 #include "ui/frame_buffer.h"
 #include <esp_heap_caps.h>
+#include <WiFi.h>
 
 namespace lgfx_fonts = lgfx::v1::fonts;
 
@@ -69,7 +70,10 @@ uint8_t s_cached_range_index = 255;
 bool s_cached_scale_use_miles = false;
 
 char s_cached_weather_line[32] = {};
+char s_cached_heap_line[32] = {};
+char s_cached_wifi_line[32] = {};
 char s_cached_date_time[20] = {};
+uint16_t s_cached_wifi_line_color = 0;
 uint16_t s_cached_weather_line_color = 0;
 uint16_t s_cached_date_time_color = 0;
 bool s_cached_footer_valid = false;
@@ -1283,7 +1287,7 @@ void drawFooterLine(const char* text, int y, int max_width, uint16_t color) {
 }
 
 void drawHealthBadge() {
-  if (!services::settings::weatherEnabled()) {
+  if (!services::settings::footerWeatherEnabled()) {
     return;
   }
 
@@ -1320,37 +1324,64 @@ void drawHealthBadge() {
 }
 
 void drawFooter() {
-  if (!services::settings::footerEnabled()) {
+  int nbFooterLine = 0;
+  if (services::settings::footerTimeEnabled()) nbFooterLine++;
+  if (services::settings::footerWeatherEnabled()) nbFooterLine++;
+  if (services::settings::footerHeapEnabled()) nbFooterLine++;
+  if (services::settings::footerWifiEnabled()) nbFooterLine++;
+
+  if (nbFooterLine == 0) {
     return;
   }
 
   updateFooterCacheIfNeeded();
 
+  int labelHeight = radar::kFooterLabelHeightPx * configuredTextScale();
+  int kFooterTopY = config::kDisplayHeight - ((nbFooterLine+1) * labelHeight);
+  
   constexpr int xc = config::kDisplayHeight / 2;
-  constexpr int dy = radar::kFooterTopY - xc;
-  constexpr int foot_line_x0 = xc - sqrt((radar::kGridOuterRadius * radar::kGridOuterRadius) - (dy * dy));
+  int dy = kFooterTopY - xc;
+  int foot_line_x0 = xc - sqrt((radar::kGridOuterRadius * radar::kGridOuterRadius) - (dy * dy));
   lgfx::LovyanGFX* s_draw = frame_buffer::get_s_draw();
 
   // The trapezoid follows the narrowing bottom edge of the round panel.
-  s_draw->fillTriangle(28, radar::kFooterTopY, 
-                       config::kDisplayWidth-28, radar::kFooterTopY, 
+  s_draw->fillTriangle(28, kFooterTopY, 
+                       config::kDisplayWidth-28, kFooterTopY, 
                        config::kDisplayWidth-72, radar::kFooterBottomY,
                        radar::kColorFooterBackground);
-  s_draw->fillTriangle(28, radar::kFooterTopY, 
+  s_draw->fillTriangle(28, kFooterTopY, 
                        config::kDisplayWidth-72, radar::kFooterBottomY,
                        72, radar::kFooterBottomY,
                        radar::kColorFooterBackground);
-  s_draw->drawFastHLine(foot_line_x0, radar::kFooterTopY, 2 * (xc - foot_line_x0), radar::kColorGrid);
+  s_draw->drawFastHLine(foot_line_x0, kFooterTopY, 2 * (xc - foot_line_x0), radar::kColorGrid);
 
-  if (services::settings::weatherEnabled()) {
-    drawFooterLine(s_cached_weather_line, radar::kFooterWeatherY, 176,
-                   s_cached_weather_line_color);
+  int y = radar::kFooterBottomY - labelHeight;
+  int max_char = 128;
+
+  if (services::settings::footerTimeEnabled()) {
+    drawFooterLine(s_cached_date_time, y, max_char, s_cached_date_time_color);
+    y = y - labelHeight;
+    max_char = 176;
   }
 
-  const int time_y = services::settings::weatherEnabled()
-                         ? radar::kFooterTimeY
-                         : radar::kFooterTimeOnlyY;
-  drawFooterLine(s_cached_date_time, time_y, 128, s_cached_date_time_color);
+  if (services::settings::footerWeatherEnabled()) {
+    drawFooterLine(s_cached_weather_line, y, max_char, s_cached_weather_line_color);
+    y = y - labelHeight;
+    max_char = 176;
+  }
+
+  if (services::settings::footerHeapEnabled()) {
+    drawFooterLine(s_cached_heap_line, y, max_char, 0x5DFF);
+    y = y - labelHeight;
+    max_char = 176;
+  }
+
+  if (services::settings::footerWifiEnabled()) {
+    drawFooterLine(s_cached_wifi_line, y, max_char, s_cached_wifi_line_color);
+    y = y - labelHeight;
+    max_char = 176;
+  }
+
 }
 
 struct AircraftDrawItem {
@@ -1821,14 +1852,62 @@ void smoothAircraftScreenPosition(const services::adsb::Aircraft& plane,
   *out_y = track->y;
 }
 
+uint16_t getRssiColor(long rssi) {
+  // -30 to -50 dBm: Excellent, strong signal.
+  // -60 to -65 dBm: Good, reliable signal for data streaming.
+  // -70 to -75 dBm: Weak, light web browsing, prone to occasional drops.
+  // -80 dBm and lower: Very weak, unstable or completely unusable connection.
+
+  if (rssi >= -50) {
+    return 0x07E0; // Green
+  } else if (rssi >= -65) {
+    return 0xFFE0; // Yellow
+  } else if (rssi >= -75) {
+    return 0xFD20; // Orange
+  } else {
+    return 0xF800; // Red
+  }
+}
+
 void updateFooterCacheIfNeeded() {
   const unsigned long now = millis();
-  const bool weather_enabled = services::settings::weatherEnabled();
+  const bool time_enabled = services::settings::footerTimeEnabled();
+  const bool weather_enabled = services::settings::footerWeatherEnabled();
+  const bool heap_enabled = services::settings::footerHeapEnabled();
+  const bool wifi_enabled = services::settings::footerWifiEnabled();
   const bool show_seconds = services::settings::showTimeSeconds();
-    const unsigned long display_delay_ms =
-      services::settings::clockFollowsInterpolationDelay()
-        ? static_cast<unsigned long>(services::settings::interpolationDelayMs())
-        : 0UL;
+
+  if (heap_enabled) {
+    // Fast Internal SRAM (Where LovyanGFX should live)
+    size_t freeSRAM = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t largestSRAMBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    #ifdef BOARD_HAS_PSRAM
+    // External PSRAM (Where WiFiClientSecure / TLS should live)
+    size_t freePSRAM = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t largestPSRAMBlock = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    sprintf(s_cached_heap_line, "%d/%dkB %d/%dkB", freeSRAM/1024, largestSRAMBlock/1024, freePSRAM/1024, largestPSRAMBlock/1024); 
+    #else
+    sprintf(s_cached_heap_line, "Heap: %dkB(%dkB)", freeSRAM/1024, largestSRAMBlock/1024); 
+    #endif      
+  } else {
+    s_cached_heap_line[0] = '\0';
+  }
+
+  if (wifi_enabled) {
+    long rssi = WiFi.RSSI();
+    String ip = WiFi.localIP().toString();
+
+    sprintf(s_cached_wifi_line, "%s (%ddBm)", ip, rssi); 
+    s_cached_wifi_line_color = getRssiColor(rssi);
+  } else {
+    s_cached_wifi_line[0] = '\0';
+  }
+
+  const unsigned long display_delay_ms =
+    services::settings::clockFollowsInterpolationDelay()
+      ? static_cast<unsigned long>(services::settings::interpolationDelayMs())
+      : 0UL;
   // Flash the last successful weather fetch's date/time in place of the
   // weather line for 1 out of every 10 seconds, when enabled.
   const bool show_last_fix = weather_enabled &&
@@ -1868,44 +1947,47 @@ void updateFooterCacheIfNeeded() {
     s_cached_weather_line[0] = '\0';
   }
 
-  char with_seconds[24] = {};
-  if (show_adsb_time) {
-    const unsigned long adsb_fix_ms = services::adsb::lastFetchUpdateMs();
-    if (show_seconds) {
-      services::weather::formatDateTimeAtMillis(
-          adsb_fix_ms, with_seconds, sizeof(with_seconds), true);
+  if (time_enabled) {
+    char with_seconds[24] = {};
+    if (show_adsb_time) {
+      const unsigned long adsb_fix_ms = services::adsb::lastFetchUpdateMs();
+      if (show_seconds) {
+        services::weather::formatDateTimeAtMillis(
+            adsb_fix_ms, with_seconds, sizeof(with_seconds), true);
+        applyFooterStyle();
+        if (frame_buffer::get_s_draw()->textWidth(with_seconds) <= 128) {
+          strncpy(s_cached_date_time, with_seconds, sizeof(s_cached_date_time) - 1);
+          s_cached_date_time[sizeof(s_cached_date_time) - 1] = '\0';
+        } else {
+          services::weather::formatDateTimeAtMillis(
+              adsb_fix_ms, s_cached_date_time, sizeof(s_cached_date_time), false);
+        }
+      } else {
+        services::weather::formatDateTimeAtMillis(
+            adsb_fix_ms, s_cached_date_time, sizeof(s_cached_date_time), false);
+      }
+      s_cached_date_time_color = radar::kColorAdsbFixTime;
+    } else if (show_seconds) {
+      services::weather::formatDateTimeLine(with_seconds, sizeof(with_seconds),
+                                            true, display_delay_ms);
       applyFooterStyle();
       if (frame_buffer::get_s_draw()->textWidth(with_seconds) <= 128) {
         strncpy(s_cached_date_time, with_seconds, sizeof(s_cached_date_time) - 1);
         s_cached_date_time[sizeof(s_cached_date_time) - 1] = '\0';
       } else {
-        services::weather::formatDateTimeAtMillis(
-            adsb_fix_ms, s_cached_date_time, sizeof(s_cached_date_time), false);
+        services::weather::formatDateTimeLine(s_cached_date_time,
+                                              sizeof(s_cached_date_time), false,
+                                              display_delay_ms);
       }
-    } else {
-      services::weather::formatDateTimeAtMillis(
-          adsb_fix_ms, s_cached_date_time, sizeof(s_cached_date_time), false);
-    }
-    s_cached_date_time_color = radar::kColorAdsbFixTime;
-  } else if (show_seconds) {
-    services::weather::formatDateTimeLine(with_seconds, sizeof(with_seconds),
-                                          true, display_delay_ms);
-    applyFooterStyle();
-    if (frame_buffer::get_s_draw()->textWidth(with_seconds) <= 128) {
-      strncpy(s_cached_date_time, with_seconds, sizeof(s_cached_date_time) - 1);
-      s_cached_date_time[sizeof(s_cached_date_time) - 1] = '\0';
+      s_cached_date_time_color = radar::kColorTagAltitude;
     } else {
       services::weather::formatDateTimeLine(s_cached_date_time,
                                             sizeof(s_cached_date_time), false,
                                             display_delay_ms);
+      s_cached_date_time_color = radar::kColorTagAltitude;
     }
-    s_cached_date_time_color = radar::kColorTagAltitude;
-  } else {
-    services::weather::formatDateTimeLine(s_cached_date_time,
-                                          sizeof(s_cached_date_time), false,
-                                          display_delay_ms);
-    s_cached_date_time_color = radar::kColorTagAltitude;
   }
+
   s_cached_footer_valid = true;
   s_cached_footer_weather_enabled = weather_enabled;
   s_cached_footer_show_seconds = show_seconds;

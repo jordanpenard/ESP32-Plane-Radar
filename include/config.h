@@ -47,7 +47,7 @@ constexpr unsigned long kBootPortalToggleHoldMs = 1200UL;
  * during this window (see startLanWebPortal()'s enable_mdns param), so
  * only the raw numeric address works here, which takes longer to type
  * than a bookmarked/remembered hostname. */
-constexpr unsigned long kBootPortalAutoWindowMs = 5000UL;
+constexpr unsigned long kBootPortalAutoWindowMs = 30000UL;
 
 // --- Display: GC9B72 2.1" round 360×360 (SPI) ---
 constexpr gpio_num_t kDisplayPinRst = GPIO_NUM_4;

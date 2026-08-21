@@ -188,6 +188,7 @@ WiFiManagerParameter s_param_back_link_top(
     "border-radius:.3rem;text-decoration:none;font-size:.92rem\">"
     "&larr; Back to menu</a></div>");
 
+WiFiManagerParameter s_section_footer("<h3 class=\"pr-h\">Footer</h3>");
 WiFiManagerParameter s_section_location("<h3 class=\"pr-h\">Location</h3>");
 WiFiManagerParameter s_section_display("<h3 class=\"pr-h\">Display</h3>");
 WiFiManagerParameter s_section_altitude("<h3 class=\"pr-h\">Altitude</h3>");
@@ -219,15 +220,25 @@ WiFiManagerParameter s_param_radar_range_idx(
 char s_range_preset_html[700] = {};
 WiFiManagerParameter s_param_range_preset(s_range_preset_html);
 
-char s_footer_checkbox_attrs[32] = "type=\"checkbox\"";
-WiFiManagerParameter s_param_footer("show_footer", "Show weather and clock", "T",
-                                    2, s_footer_checkbox_attrs,
-                                    WFM_LABEL_AFTER);
+char s_footer_time_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_footer_time(
+  "show_footer_time", "Show time in footer", "T", 2, 
+  s_footer_time_checkbox_attrs, WFM_LABEL_AFTER);
 
-char s_weather_checkbox_attrs[32] = "type=\"checkbox\"";
-WiFiManagerParameter s_param_weather(
-    "show_weather", "Show current weather", "T", 2,
-    s_weather_checkbox_attrs, WFM_LABEL_AFTER);
+char s_footer_weather_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_footer_weather(
+    "show_footer_weather", "Show current weather in footer", "T", 2,
+    s_footer_weather_checkbox_attrs, WFM_LABEL_AFTER);
+
+char s_footer_heap_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_footer_heap(
+  "show_footer_heap", "Show heap in footer", "T", 2, 
+  s_footer_heap_checkbox_attrs, WFM_LABEL_AFTER);
+
+char s_footer_wifi_checkbox_attrs[32] = "type=\"checkbox\"";
+WiFiManagerParameter s_param_footer_wifi(
+    "show_footer_wifi", "Show wifi info in footer", "T", 2,
+    s_footer_wifi_checkbox_attrs, WFM_LABEL_AFTER);
 
 char s_fahrenheit_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_fahrenheit(
@@ -510,14 +521,22 @@ void refreshPortalParamDefaults() {
                        sizeof(s_runways_checkbox_attrs),
                        ui::radar::showRunways());
   s_param_runways.setValue("T", 2);
-  refreshCheckboxAttrs(s_footer_checkbox_attrs,
-                       sizeof(s_footer_checkbox_attrs),
-                       services::settings::footerEnabled());
-  s_param_footer.setValue("T", 2);
-  refreshCheckboxAttrs(s_weather_checkbox_attrs,
-                       sizeof(s_weather_checkbox_attrs),
-                       services::settings::weatherEnabled());
-  s_param_weather.setValue("T", 2);
+  refreshCheckboxAttrs(s_footer_time_checkbox_attrs,
+                       sizeof(s_footer_time_checkbox_attrs),
+                       services::settings::footerTimeEnabled());
+  s_param_footer_time.setValue("T", 2);
+  refreshCheckboxAttrs(s_footer_weather_checkbox_attrs,
+                       sizeof(s_footer_weather_checkbox_attrs),
+                       services::settings::footerWeatherEnabled());
+  s_param_footer_weather.setValue("T", 2);
+  refreshCheckboxAttrs(s_footer_heap_checkbox_attrs,
+                       sizeof(s_footer_heap_checkbox_attrs),
+                       services::settings::footerHeapEnabled());
+  s_param_footer_heap.setValue("T", 2);
+  refreshCheckboxAttrs(s_footer_wifi_checkbox_attrs,
+                       sizeof(s_footer_wifi_checkbox_attrs),
+                       services::settings::footerWifiEnabled());
+  s_param_footer_wifi.setValue("T", 2);
   refreshCheckboxAttrs(s_fahrenheit_checkbox_attrs,
                        sizeof(s_fahrenheit_checkbox_attrs),
                        services::settings::temperatureFahrenheit());
@@ -599,7 +618,8 @@ void onPortalParamsSaved() {
   ui::radar::saveRunwaysFromPortal(s_param_runways.getValue());
   ui::radar::saveRangeIndexFromPortal(s_param_radar_range_idx.getValue());
   services::settings::saveFromPortal(
-      s_param_footer.getValue(), s_param_weather.getValue(),
+      s_param_footer_time.getValue(), s_param_footer_weather.getValue(),
+      s_param_footer_heap.getValue(), s_param_footer_wifi.getValue(),
       s_posix_tz.getValue(),
       s_param_fahrenheit.getValue(), services::units::useImperialDistance(),
       s_param_altitude_offset.getValue(),
@@ -626,8 +646,10 @@ void savePortalParamsFromRequest(WebServer& web) {
   const String miles = web.arg("use_miles");
   const String runways = web.arg("show_runways");
   const String range_idx = web.arg("radar_range_idx");
-  const String footer = web.arg("show_footer");
-  const String weather = web.arg("show_weather");
+  const String footer_time = web.arg("show_footer_time");
+  const String footer_weather = web.arg("show_footer_weather");
+  const String footer_heap = web.arg("show_footer_heap");
+  const String footer_wifi = web.arg("show_footer_wifi");
   const String fahrenheit = web.arg("temp_f");
   const String altitude_offset = web.arg("alt_offset");
   const String altitude_filter_enabled = web.arg("alt_filter_enabled");
@@ -653,7 +675,8 @@ void savePortalParamsFromRequest(WebServer& web) {
   ui::radar::saveRunwaysFromPortal(runways.c_str());
   ui::radar::saveRangeIndexFromPortal(range_idx.c_str());
   services::settings::saveFromPortal(
-      footer.c_str(), weather.c_str(), 
+      footer_time.c_str(), footer_weather.c_str(), 
+      footer_heap.c_str(), footer_wifi.c_str(), 
       posix_tz.c_str(),
       fahrenheit.c_str(),
       services::units::useImperialDistance(), altitude_offset.c_str(),
@@ -770,13 +793,17 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_hint_alt_filter);
   wm.addParameter(&s_script_alt_filter_toggle);
 
+  wm.addParameter(&s_section_footer);
+  wm.addParameter(&s_param_footer_time);
+  wm.addParameter(&s_param_footer_weather);
+  wm.addParameter(&s_param_footer_heap);
+  wm.addParameter(&s_param_footer_wifi);
+
   wm.addParameter(&s_section_display);
   wm.addParameter(&s_param_miles);
   wm.addParameter(&s_param_runways);
   wm.addParameter(&s_param_radar_range_idx);
   wm.addParameter(&s_param_range_preset);
-  wm.addParameter(&s_param_footer);
-  wm.addParameter(&s_param_weather);
   wm.addParameter(&s_param_fahrenheit);
   wm.addParameter(&s_break_fahrenheit);
   wm.addParameter(&s_param_weather_fix_time);

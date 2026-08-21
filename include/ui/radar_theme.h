@@ -65,11 +65,7 @@ constexpr int kAircraftTagLabelHeightPx = 13;
 
 /** Two-row weather/time overlay. */
 constexpr int kFooterLabelHeightPx = 13;
-constexpr int kFooterTopY = config::kDisplayHeight - 46;
-constexpr int kFooterWeatherY = kFooterTopY + 3;
-constexpr int kFooterTimeY = kFooterWeatherY + kFooterLabelHeightPx + 3;
-constexpr int kFooterBottomY = kFooterTimeY + kFooterLabelHeightPx;
-constexpr int kFooterTimeOnlyY = config::kDisplayHeight - 35;
+constexpr int kFooterBottomY = config::kDisplayHeight - kFooterLabelHeightPx;
 
 /** RGB565 palette targets (applied in initPalette). */
 constexpr uint8_t kBgR = 4;
