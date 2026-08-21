@@ -23,6 +23,7 @@ bool footerTimeEnabled();
 bool footerWeatherEnabled();
 bool footerHeapEnabled();
 bool footerWifiEnabled();
+bool portalOnlyOnBoot();
 bool temperatureFahrenheit();
 bool altitudeMeters();
 float altitudeOffsetFeet();
@@ -57,6 +58,7 @@ const char* otaPassword();
  */
 void saveFromPortal(const char* footer_time_checkbox, const char* footer_weather_checkbox,
                     const char* footer_heap_checkbox, const char* footer_wifi_checkbox,
+                    const char* portal_only_on_boot_checkbox,
                     const char* posix_tz_config,
                     const char* fahrenheit_checkbox,
                     bool use_miles,
