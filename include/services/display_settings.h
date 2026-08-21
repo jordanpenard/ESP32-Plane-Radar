@@ -19,8 +19,10 @@ constexpr int kBrightnessDefaultPercent = 100;
 void init();
 
 const char* posix_tz();
-bool footerEnabled();
-bool weatherEnabled();
+bool footerTimeEnabled();
+bool footerWeatherEnabled();
+bool footerHeapEnabled();
+bool footerWifiEnabled();
 bool temperatureFahrenheit();
 bool altitudeMeters();
 float altitudeOffsetFeet();
@@ -53,7 +55,8 @@ const char* otaPassword();
  * Store web-portal values. An empty OTA password keeps the current password so
  * the portal never needs to echo the stored secret into its HTML.
  */
-void saveFromPortal(const char* footer_checkbox, const char* weather_checkbox,
+void saveFromPortal(const char* footer_time_checkbox, const char* footer_weather_checkbox,
+                    const char* footer_heap_checkbox, const char* footer_wifi_checkbox,
                     const char* posix_tz_config,
                     const char* fahrenheit_checkbox,
                     bool use_miles,

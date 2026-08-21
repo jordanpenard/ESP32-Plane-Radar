@@ -363,7 +363,7 @@ bool refreshIfDue(double latitude, double longitude, bool force) {
   s_last_attempt_ms = now;
   s_last_latitude = latitude;
   s_last_longitude = longitude;
-  if (fetch(latitude, longitude)) {
+  if (settings::footerWeatherEnabled() && fetch(latitude, longitude)) {
     return true;
   }
 
