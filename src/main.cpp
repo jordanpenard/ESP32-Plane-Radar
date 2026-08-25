@@ -154,6 +154,8 @@ void onNetworkPoll() {
 }  // namespace
 
 void setup() {
+  pinMode(config::kBatteryPin, ANALOG);
+  
   Serial.begin(115200);
   delay(500);
   Serial.println();

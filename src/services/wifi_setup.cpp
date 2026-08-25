@@ -237,7 +237,7 @@ WiFiManagerParameter s_param_footer_heap(
 
 char s_footer_wifi_checkbox_attrs[32] = "type=\"checkbox\"";
 WiFiManagerParameter s_param_footer_wifi(
-    "show_footer_wifi", "Show wifi info in footer", "T", 2,
+    "show_footer_wifi", "Show wifi and battery info in footer", "T", 2,
     s_footer_wifi_checkbox_attrs, WFM_LABEL_AFTER);
 
 char s_portal_only_on_boot_checkbox_attrs[32] = "type=\"checkbox\"";

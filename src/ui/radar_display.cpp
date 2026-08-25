@@ -1322,7 +1322,9 @@ void drawHealthBadge() {
   s_draw->drawString(badge_text, x + kPadX, y + kPadY);
 }
 
-uint16_t getRssiColor(long rssi) {
+uint16_t getRssiColor() {
+  long rssi = WiFi.RSSI();
+
   // Constrain RSSI to our working boundaries (-75 dBm to -50 dBm)
   if (rssi > -50) rssi = -50;
   if (rssi < -75) rssi = -75;
@@ -1367,8 +1369,7 @@ uint16_t getRssiColor(long rssi) {
 
 void drawWifiSymbol(int32_t x, int32_t y, int32_t size) {
   lgfx::LovyanGFX* gfx = frame_buffer::get_s_draw();  
-  long rssi = WiFi.RSSI();
-  uint16_t color = getRssiColor(rssi);
+  uint16_t color = getRssiColor();
 
   // 1. Establish an intentional internal padding (10% of total size)
   int32_t padding = size / 10;
@@ -1407,6 +1408,86 @@ void drawWifiSymbol(int32_t x, int32_t y, int32_t size) {
   int32_t r2_out = innerSize; 
   int32_t r2_in  = r2_out - bandThickness;
   gfx->fillArc(centerX, centerY, r2_out, r2_in, startAngle, endAngle, color);
+}
+
+uint16_t getBatteryColor(float factor) {
+  if (factor > 0.75) {
+    return 0x07E0; // Green
+  } else if (factor > 0.5) {
+    return 0xFFE0; // Yellow
+  } else if (factor > 0.25) {
+    return 0xFD20; // Orange
+  } else {
+    return 0xF800; // Red
+  }
+}
+
+void drawBatterySymbol(int32_t x, int32_t y, int32_t size) {
+  lgfx::LovyanGFX* gfx = frame_buffer::get_s_draw();  
+
+  uint32_t battery_mv = analogReadMilliVolts(config::kBatteryPin);
+  if (battery_mv > 2100) battery_mv = 2100; // Max cap at 4.2V
+  if (battery_mv < 1650) battery_mv = 1650; // Min cap at 3.3V
+
+  // Map to a normalized 0.0 to 1.0 float value across the spectrum
+  // 1650 becomes 0.0 (Worst), 2100 becomes 1.0 (Best)
+  float factor = (battery_mv - 1650) / 450.0; 
+
+  uint16_t color = getBatteryColor(factor);
+
+  // 1. Fixed dimensions optimized for small footprints (size ~ 15)
+  // At size 15, the battery will be 13 pixels wide and 7 pixels high
+  int32_t batW = size - 2; 
+  int32_t batH = (size / 2) + 1;
+  
+  // Center it vertically inside the bounding box
+  int32_t batX = x + 1;
+  int32_t batY = y + (size - batH) / 2;
+
+  // 2. Draw 1-pixel thick permanent frame outline
+  gfx->drawRect(batX, batY, batW, batH, color);
+
+  // Draw the tiny positive tip terminal
+  int32_t tipH = batH / 3;
+  if (tipH < 2) tipH = 2;
+  int32_t tipY = batY + (batH - tipH) / 2;
+  gfx->fillRect(batX + batW, tipY, 1, tipH, color);
+
+  // 3. Simple threshold matching your request
+  int32_t barsToDraw = 0;
+  if (factor > 0.75)      barsToDraw = 3;
+  else if (factor > 0.50) barsToDraw = 2;
+  else if (factor > 0.25) barsToDraw = 1;
+  else                    barsToDraw = 0;
+
+  // 4. Fixed micro-layout inner canvas math
+  int32_t innerX = batX + 2; // Jump past the frame border line
+  int32_t innerY = batY + 2;
+  int32_t innerW = batW - 4; // Absolute usable inner pixel width
+  int32_t innerH = batH - 4;
+
+  // Clear old inner contents to avoid ghosting artifacts
+  gfx->fillRect(innerX, innerY, innerW, innerH, 0x0000); // Assumes a black background
+
+  // 5. Explicitly compute sizes for exactly 3 blocks within tight spaces
+  // No extra math logic: calculate a clean per-bar width based on available room
+  int32_t barGap = 1; 
+  int32_t barW = (innerW - (barGap * 2)) / 3;
+  if (barW < 1) barW = 1; // Safeguard floor to ensure visibility
+
+  // Draw the bars sequentially from left to right
+  for (int32_t i = 0; i < barsToDraw; i++) {
+    int32_t currentBarX = innerX + (i * (barW + barGap));
+    
+    // Safety check to ensure the last bar doesn't overdraw the right border frame
+    if (currentBarX + barW > innerX + innerW) {
+      barW = (innerX + innerW) - currentBarX;
+    }
+    
+    if (barW > 0 && innerH > 0) {
+      gfx->fillRect(currentBarX, innerY, barW, innerH, color);
+    }
+  }
 }
 
 void drawFooter() {
@@ -1464,8 +1545,10 @@ void drawFooter() {
 
   if (services::settings::footerWifiEnabled()) {
     drawFooterLine(s_cached_wifi_line, y, max_char, 0xCE79);
-    int x = (config::kDisplayWidth / 2) + 40;
-    drawWifiSymbol(x, y, labelHeight);
+    int wifi_x = (config::kDisplayWidth / 2) + 50;
+    int battery_x = (config::kDisplayWidth / 2) - 50 - labelHeight;
+    drawWifiSymbol(wifi_x, y, labelHeight);
+    drawBatterySymbol(battery_x, y, labelHeight);
     y = y - labelHeight;
     max_char = 176;
   }
@@ -1967,7 +2050,7 @@ void updateFooterCacheIfNeeded() {
 
   if (wifi_enabled) {
     String ip = WiFi.localIP().toString();
-    sprintf(s_cached_wifi_line, "%s      ", ip); 
+    sprintf(s_cached_wifi_line, "%s", ip); 
   } else {
     s_cached_wifi_line[0] = '\0';
   }

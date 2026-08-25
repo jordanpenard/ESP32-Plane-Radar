@@ -26,6 +26,9 @@ constexpr unsigned long kWifiDownGraceMs = 4000;
 /** Minimum interval between background reconnect tries. */
 constexpr unsigned long kWifiReconnectIntervalMs = 15000;
 
+// --- Battery monitoring divide by 2 from battery voltage ---
+constexpr gpio_num_t kBatteryPin = GPIO_NUM_10;
+
 // --- BOOT button (ESP32-S3 Super Mini, active LOW) ---
 constexpr gpio_num_t kBootPin = GPIO_NUM_0;
 constexpr unsigned long kBootResetHoldMs = 3000UL;
