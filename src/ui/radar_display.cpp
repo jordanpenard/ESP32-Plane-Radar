@@ -73,7 +73,6 @@ char s_cached_weather_line[32] = {};
 char s_cached_heap_line[32] = {};
 char s_cached_wifi_line[32] = {};
 char s_cached_date_time[20] = {};
-uint16_t s_cached_wifi_line_color = 0;
 uint16_t s_cached_weather_line_color = 0;
 uint16_t s_cached_date_time_color = 0;
 bool s_cached_footer_valid = false;
@@ -1323,6 +1322,93 @@ void drawHealthBadge() {
   s_draw->drawString(badge_text, x + kPadX, y + kPadY);
 }
 
+uint16_t getRssiColor(long rssi) {
+  // Constrain RSSI to our working boundaries (-75 dBm to -50 dBm)
+  if (rssi > -50) rssi = -50;
+  if (rssi < -75) rssi = -75;
+
+  float r, g, b;
+
+  // Map RSSI into a normalized 0.0 to 1.0 float value across the spectrum
+  // -75 becomes 0.0 (Worst), -50 becomes 1.0 (Best)
+  float factor = (rssi - (-75)) / 25.0; 
+
+  // Multi-stage color blending logic
+  if (factor < 0.4) {
+    // Stage 1: Red to Orange (-75 dBm to -65 dBm)
+    // Scale factor to a 0.0 - 1.0 range for this specific window
+    float subFactor = factor / 0.4;
+    r = 255;
+    g = 0 + (128 * subFactor); // Fade green up to half-way
+    b = 0;
+  } 
+  else if (factor < 0.6) {
+    // Stage 2: Orange to Yellow (-65 dBm to -60 dBm)
+    float subFactor = (factor - 0.4) / 0.2;
+    r = 255;
+    g = 128 + (127 * subFactor); // Fade green up to maximum
+    b = 0;
+  } 
+  else {
+    // Stage 3: Yellow to Green (-60 dBm to -50 dBm)
+    float subFactor = (factor - 0.6) / 0.4;
+    r = 255 - (255 * subFactor); // Fade red completely out
+    g = 255;
+    b = 0;
+  }
+
+  // Pack the raw 8-bit RGB channels back into standard 16-bit RGB565 format
+  uint16_t r565 = ((uint16_t)r & 0xF8) << 8;
+  uint16_t g565 = ((uint16_t)g & 0xFC) << 3;
+  uint16_t b565 = ((uint16_t)b & 0xF8) >> 3;
+
+  return (r565 | g565 | b565);
+}
+
+void drawWifiSymbol(int32_t x, int32_t y, int32_t size) {
+  lgfx::LovyanGFX* gfx = frame_buffer::get_s_draw();  
+  long rssi = WiFi.RSSI();
+  uint16_t color = getRssiColor(rssi);
+
+  // 1. Establish an intentional internal padding (10% of total size)
+  int32_t padding = size / 10;
+  if (padding < 2) padding = 2; // Guard for small displays
+  
+  // Calculate the usable internal canvas area
+  int32_t innerSize = size - (padding * 2);
+
+  // 2. Calculate coordinates safely away from the outer edges
+  int32_t centerX = x + (size / 2);
+  
+  // Base dot radius sized relative to the padded canvas
+  int32_t dotRadius = innerSize / 6;
+  if (dotRadius < 2) dotRadius = 2;
+  
+  // Pin the bottom of the dot exactly to the inner padded floor
+  int32_t centerY = y + size - padding - dotRadius;
+
+  // 5. Render 2 concentric arc bands (Sweeping upward inside the inner canvas)
+  int32_t startAngle = 225;
+  int32_t endAngle = 315;
+  int32_t bandThickness = innerSize / 8;
+  if (bandThickness < 1) bandThickness = 1;
+
+  // Band 0 (part of the dot)
+  int32_t r0_out = bandThickness + 1;
+  int32_t r0_in  = 1;
+  gfx->fillArc(centerX, centerY, r0_out, r0_in, startAngle, endAngle, color);
+
+  // Band 1 (Inner arc)
+  int32_t r1_out = innerSize * 0.6;
+  int32_t r1_in  = r1_out - bandThickness;
+  gfx->fillArc(centerX, centerY, r1_out, r1_in, startAngle, endAngle, color);
+
+  // Band 2 (Outer arc - matches the maximum padded boundary)
+  int32_t r2_out = innerSize; 
+  int32_t r2_in  = r2_out - bandThickness;
+  gfx->fillArc(centerX, centerY, r2_out, r2_in, startAngle, endAngle, color);
+}
+
 void drawFooter() {
   int nbFooterLine = 0;
   if (services::settings::footerTimeEnabled()) nbFooterLine++;
@@ -1377,7 +1463,9 @@ void drawFooter() {
   }
 
   if (services::settings::footerWifiEnabled()) {
-    drawFooterLine(s_cached_wifi_line, y, max_char, s_cached_wifi_line_color);
+    drawFooterLine(s_cached_wifi_line, y, max_char, 0xCE79);
+    int x = (config::kDisplayWidth / 2) + 40;
+    drawWifiSymbol(x, y, labelHeight);
     y = y - labelHeight;
     max_char = 176;
   }
@@ -1852,23 +1940,6 @@ void smoothAircraftScreenPosition(const services::adsb::Aircraft& plane,
   *out_y = track->y;
 }
 
-uint16_t getRssiColor(long rssi) {
-  // -30 to -50 dBm: Excellent, strong signal.
-  // -60 to -65 dBm: Good, reliable signal for data streaming.
-  // -70 to -75 dBm: Weak, light web browsing, prone to occasional drops.
-  // -80 dBm and lower: Very weak, unstable or completely unusable connection.
-
-  if (rssi >= -50) {
-    return 0x07E0; // Green
-  } else if (rssi >= -65) {
-    return 0xFFE0; // Yellow
-  } else if (rssi >= -75) {
-    return 0xFD20; // Orange
-  } else {
-    return 0xF800; // Red
-  }
-}
-
 void updateFooterCacheIfNeeded() {
   const unsigned long now = millis();
   const bool time_enabled = services::settings::footerTimeEnabled();
@@ -1895,11 +1966,8 @@ void updateFooterCacheIfNeeded() {
   }
 
   if (wifi_enabled) {
-    long rssi = WiFi.RSSI();
     String ip = WiFi.localIP().toString();
-
-    sprintf(s_cached_wifi_line, "%s (%ddBm)", ip, rssi); 
-    s_cached_wifi_line_color = getRssiColor(rssi);
+    sprintf(s_cached_wifi_line, "%s      ", ip); 
   } else {
     s_cached_wifi_line[0] = '\0';
   }
