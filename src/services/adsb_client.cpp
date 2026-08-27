@@ -1119,6 +1119,8 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   }
   http.setReuse(true);
 
+  http.useHTTP10(true); // <-- FORCE SERVER TO DROP CHUNKED ENCODING
+
   http.setTimeout(kAdsbRequestTimeoutMs);
   const int code = performGetWithPoll(http, kAdsbRequestTimeoutMs, 1);
   if (code < 0) {
@@ -1205,6 +1207,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   if (ac.isNull()) {
     s_aircraft_count = 0;
     s_last_fetch_update_ms = millis();
+    Serial.printf("adsb: 0 aircraft\n");
     return true;
   }
 
