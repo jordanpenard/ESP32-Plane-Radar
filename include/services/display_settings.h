@@ -52,6 +52,9 @@ bool autoDimEnabled();
 int brightnessPercent();
 const char* otaPassword();
 
+float bat_max();
+float bat_min();
+
 /**
  * Store web-portal values. An empty OTA password keeps the current password so
  * the portal never needs to echo the stored secret into its HTML.
@@ -76,7 +79,9 @@ void saveFromPortal(const char* footer_time_checkbox, const char* footer_weather
                     const char* text_scale_percent_value,
                     const char* auto_dim_checkbox,
                     const char* brightness_percent_value,
-                    const char* ota_password_value);
+                    const char* ota_password_value,
+                    const char* bat_max_value,
+                    const char* bat_min_value);
 
 /** Restore defaults during a full BOOT-button reset. */
 void clear();

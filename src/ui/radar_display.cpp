@@ -1425,13 +1425,16 @@ uint16_t getBatteryColor(float factor) {
 void drawBatterySymbol(int32_t x, int32_t y, int32_t size) {
   lgfx::LovyanGFX* gfx = frame_buffer::get_s_draw();  
 
+  const int batMin = services::settings::bat_min() * 1000 / 2;
+  const int batMax = services::settings::bat_max() * 1000 / 2;
+
   uint32_t battery_mv = analogReadMilliVolts(config::kBatteryPin);
-  if (battery_mv > 2100) battery_mv = 2100; // Max cap at 4.2V
-  if (battery_mv < 1650) battery_mv = 1650; // Min cap at 3.3V
+  if (battery_mv > batMax) battery_mv = batMax; // Max cap
+  if (battery_mv < batMin) battery_mv = batMin; // Min cap
 
   // Map to a normalized 0.0 to 1.0 float value across the spectrum
-  // 1650 becomes 0.0 (Worst), 2100 becomes 1.0 (Best)
-  float factor = (battery_mv - 1650) / 450.0; 
+  // min becomes 0.0 (Worst), max becomes 1.0 (Best)
+  float factor = (battery_mv - batMin) / float(batMax - batMin); 
 
   uint16_t color = getBatteryColor(factor);
 

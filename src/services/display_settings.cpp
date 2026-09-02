@@ -35,6 +35,8 @@ constexpr char kKeyTextScale[] = "fontPct";
 constexpr char kKeyOtaPassword[] = "otaPass";
 constexpr char kKeyAutoDim[] = "autoDim";
 constexpr char kKeyBrightness[] = "brightPct";
+constexpr char kKeyBatteryMax[] = "batMax";
+constexpr char kKeyBatteryMin[] = "batMin";
 
 char s_ota_password[kOtaPasswordMaxLen + 1] = {};
 bool s_footer_time_enabled = true;
@@ -59,6 +61,8 @@ int s_interpolation_delay_ms = kInterpolationDelayDefaultMs;
 bool s_clock_follows_interpolation_delay = true;
 bool s_auto_dim_enabled = false;
 int s_brightness_percent = kBrightnessDefaultPercent;
+float s_bat_max = 3.8f;
+float s_bat_min = 3.3f;
 
 bool checkboxChecked(const char* value) {
   if (value == nullptr || value[0] == '\0') {
@@ -240,6 +244,8 @@ void loadDefaults() {
   s_clock_follows_interpolation_delay = true;
   s_auto_dim_enabled = false;
   s_brightness_percent = kBrightnessDefaultPercent;
+  s_bat_max = 3.8f;
+  s_bat_min = 3.3f;
 }
 
 void persist() {
@@ -271,6 +277,8 @@ void persist() {
   prefs.putBool(kKeyAutoDim, s_auto_dim_enabled);
   prefs.putInt(kKeyBrightness, s_brightness_percent);
   prefs.putString(kKeyOtaPassword, s_ota_password);
+  prefs.putFloat(kKeyBatteryMax, s_bat_max);
+  prefs.putFloat(kKeyBatteryMin, s_bat_min);
   prefs.end();
 }
 
@@ -320,6 +328,8 @@ void init() {
   s_auto_dim_enabled = prefs.getBool(kKeyAutoDim, false);
   s_brightness_percent = clampBrightnessPercent(
       prefs.getInt(kKeyBrightness, kBrightnessDefaultPercent));
+  s_bat_max = prefs.getFloat(kKeyBatteryMax, 3.8f);
+  s_bat_min = prefs.getFloat(kKeyBatteryMin, 3.3f);
 
   String value = prefs.getString(kKeyOtaPassword, config::kDefaultOtaPassword);
   copyCleanText(value.c_str(), s_ota_password, sizeof(s_ota_password));
@@ -384,6 +394,10 @@ int brightnessPercent() { return s_brightness_percent; }
 
 const char* otaPassword() { return s_ota_password; }
 
+float bat_max() { return s_bat_max; }
+
+float bat_min() { return s_bat_min; }
+
 void saveFromPortal(const char* footer_time_checkbox, const char* footer_weather_checkbox,
                     const char* footer_heap_checkbox, const char* footer_wifi_checkbox,
                     const char* portal_only_on_boot_checkbox,
@@ -404,7 +418,9 @@ void saveFromPortal(const char* footer_time_checkbox, const char* footer_weather
                     const char* text_scale_percent_value,
                     const char* auto_dim_checkbox,
                     const char* brightness_percent_value,
-                    const char* ota_password_value) {
+                    const char* ota_password_value,
+                    const char* bat_max_value,
+                    const char* bat_min_value) {
   s_footer_time_enabled = checkboxChecked(footer_time_checkbox);
   s_footer_weather_enabled = checkboxChecked(footer_weather_checkbox);
   s_footer_heap_enabled = checkboxChecked(footer_heap_checkbox);
@@ -460,6 +476,15 @@ void saveFromPortal(const char* footer_time_checkbox, const char* footer_weather
     s_ota_password[sizeof(s_ota_password) - 1] = '\0';
   }
 
+  float bat_max = s_bat_max;
+  if (parseAltitudeOffset(bat_max_value, &bat_max)) {
+    s_bat_max = bat_max;
+  }
+  float bat_min = s_bat_min;
+  if (parseAltitudeOffset(bat_min_value, &bat_min)) {
+    s_bat_min = bat_min;
+  }
+
   persist();
   Serial.printf("Posix Timezone: %s\n", s_posix_tz_config);
   Serial.printf("Portal only on boot: %s\n", s_portal_only_on_boot ? "yes" : "no");
@@ -468,6 +493,7 @@ void saveFromPortal(const char* footer_time_checkbox, const char* footer_weather
                 s_footer_weather_enabled ? "on" : "off",
                 s_footer_heap_enabled ? "on" : "off",
                 s_footer_wifi_enabled ? "on" : "off");
+  Serial.printf("Battery min and max: %.1f %.1f\n", s_bat_min, s_bat_max);
   Serial.printf("Display altitude: %s, text: %d%%\n",
                 s_altitude_meters ? "m" : "ft", s_text_scale_percent);
   Serial.printf("Altitude offset: %.1f ft\n", s_altitude_offset_feet);

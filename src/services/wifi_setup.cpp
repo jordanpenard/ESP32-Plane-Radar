@@ -132,6 +132,7 @@ String diagnosticsHtml() {
 
   html += "<tr><th>Item</th><th>Value</th></tr>";
   html += "<tr><td>Uptime (s)</td><td>" + String(millis() / 1000UL) + "</td></tr>";
+  html += "<tr><td>Battery (V)</td><td>" + String(analogReadMilliVolts(config::kBatteryPin) * 2 / 1000.0) + "</td></tr>";
   html += "<tr><td>Free heap</td><td>" + String(ESP.getFreeHeap()) + "</td></tr>";
   html += "<tr><td>WiFi status</td><td>" +
     String(WiFi.status() == WL_CONNECTED ? "connected" : "disconnected") +
@@ -151,8 +152,11 @@ String diagnosticsHtml() {
   return html;
 }
 
+constexpr int kBatteryParamLen = 6;
 constexpr int kCoordParamLen = 20;
 constexpr int kPosixTzParamLen = 64;
+constexpr char kBatteryInputAttrs[] =
+    "type=\"number\" step=\"0.1\" min=\"0\" max=\"5\"";
 constexpr char kLatitudeInputAttrs[] =
     "type=\"number\" step=\"0.000001\" min=\"-90\" max=\"90\"";
 constexpr char kLongitudeInputAttrs[] =
@@ -196,6 +200,11 @@ WiFiManagerParameter s_section_clock("<h3 class=\"pr-h\">Clock</h3>");
 WiFiManagerParameter s_section_adsb(
     "<h3 class=\"pr-h\">ADS-B &amp; interpolation</h3>");
 WiFiManagerParameter s_section_advanced("<h3 class=\"pr-h\">Advanced</h3>");
+
+WiFiManagerParameter s_param_bat_max("bat_max", "Battery max (V)", "3.8",
+                                kBatteryParamLen, kBatteryInputAttrs);
+WiFiManagerParameter s_param_bat_min("bat_min", "Battery min (V)", "3.3",
+                                kBatteryParamLen, kBatteryInputAttrs);
 
 WiFiManagerParameter s_param_lat("radar_lat", "Latitude (deg)", "0",
                                 kCoordParamLen, kLatitudeInputAttrs);
@@ -511,6 +520,14 @@ void refreshRangePresetHtml() {
 void refreshPortalParamDefaults() {
   refreshInterpolationDelayPresetHtml();
   refreshRangePresetHtml();
+
+  char bat_max_buf[kBatteryParamLen + 1];
+  char bat_min_buf[kBatteryParamLen + 1];
+  snprintf(bat_max_buf, sizeof(bat_max_buf), "%.1f", services::settings::bat_max());
+  snprintf(bat_min_buf, sizeof(bat_min_buf), "%.1f", services::settings::bat_min());
+  s_param_bat_max.setValue(bat_max_buf, kBatteryParamLen);
+  s_param_bat_min.setValue(bat_min_buf, kBatteryParamLen);
+
   char lat_buf[kCoordParamLen + 1];
   char lon_buf[kCoordParamLen + 1];
   snprintf(lat_buf, sizeof(lat_buf), "%.6f", services::location::lat());
@@ -646,10 +663,14 @@ void onPortalParamsSaved() {
       s_param_text_scale.getValue(),
       s_param_auto_dim.getValue(),
       s_param_brightness.getValue(),
-      s_param_ota_password.getValue());
+      s_param_ota_password.getValue(),
+      s_param_bat_max.getValue(),
+      s_param_bat_min.getValue());
 }
 
 void savePortalParamsFromRequest(WebServer& web) {
+  const String bat_max = web.arg("bat_max");
+  const String bat_min = web.arg("bat_min");
   const String latitude = web.arg("radar_lat");
   const String longitude = web.arg("radar_lon");
   const String posix_tz = web.arg("posix_tz");
@@ -701,7 +722,9 @@ void savePortalParamsFromRequest(WebServer& web) {
       weather_fix_time.c_str(),
       adsb_fix_time.c_str(),
       text_scale.c_str(), auto_dim.c_str(), brightness_pct.c_str(),
-      ota_password.c_str());
+      ota_password.c_str(),
+      bat_max.c_str(), bat_min.c_str()
+    );
   refreshPortalParamDefaults();
 }
 
@@ -842,6 +865,8 @@ void attachPortalParams(WiFiManager& wm) {
   wm.addParameter(&s_hint_interp);
 
   wm.addParameter(&s_section_advanced);
+  wm.addParameter(&s_param_bat_max);
+  wm.addParameter(&s_param_bat_min);
   wm.addParameter(&s_param_portal_only_on_boot);
   wm.addParameter(&s_param_ota_password);
   wm.addParameter(&s_param_diag_link);
