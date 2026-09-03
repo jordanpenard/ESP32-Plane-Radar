@@ -1,17 +1,26 @@
 # Plane Radar
 
-<img width="800" height="450" alt="plane-radar" src="https://github.com/user-attachments/assets/716d0992-dab8-47ba-8f1a-2aec7f607419" />
+<img height="450" alt="plane-radar" src="https://repository-images.githubusercontent.com/1334250660/2ba4539d-18b1-4f5d-a50a-0bb1482431c0" />
 
-**3D printed case (STL + assembly):** [MakerWorld](https://makerworld.com/en/models/2872376-esp32-plane-radar-live-ads-b-on-a-round-display#profileId-3207083) · **Firmware:** [Releases](../../releases)
+**3D printed case:** [OnShape](https://cad.onshape.com/documents/3de432f81fc8721c3110f65f/w/035ae9441fdd076cdb7c2427/e/79c86aae2b2cf7973b1fb35b?renderMode=0&uiState=6a993c898ad4e98b24180c9e)
 
-Firmware for an **ESP32-C3 Super Mini** and a **1.28″ round GC9A01** display (240×240). Shows a circular **ADS-B radar** around your configured location, with flight routes, detailed aircraft models, local weather/time, browser settings, and authenticated OTA updates.
+Firmware for an **ESP32-S3 Super Mini** and a **2.1″ round GC9B72** display (360x360). Shows a circular **ADS-B radar** around your configured location, with flight routes, detailed aircraft models, local weather/time, browser settings, and authenticated OTA updates.
+
+Parts needed to build it :
+- ESP32 S3 super mini (with PSRAM)
+- GC9B72 360x360 screen
+- TP4056 battery charger
+- 18650 battery cell
+- 18650 battery holder
+- Mechanical switch (to power the device on and off)
+- 2 x 100k ohms resistors
 
 ## What it does
 
 1. **Wi‑Fi setup** (if needed) — captive portal on AP **`PlaneRadar-Setup`**
 2. **Radar** — live aircraft from [adsb.fi](https://opendata.adsb.fi/) on a sonar-style grid
 3. **Useful labels** — route (for example `BOS-IND`), detailed aircraft model, and altitude
-4. **Readable footer** — current conditions, temperature, humidity, local time, and date
+4. **Readable footer** — current conditions, temperature, humidity, local time, and date, sram usage info, IP address, battery level, wifi signal strength
 
 After Wi‑Fi is saved, the device reconnects automatically; the radar runs in the main loop with periodic ADS-B updates (~3 s).
 
@@ -49,18 +58,20 @@ Changing coordinates no longer requires a credential reset. The new position is 
 | **Latitude / Longitude** | Radar center and ADS-B query position (defaults in `config.h` until set) |
 | **Display distances in miles** | Ring scale label in **mi** instead of **km** (e.g. `6mi` vs `10km`) |
 | **Show airport runways** | Major-airport runway overlay on the radar (off to hide) |
-| **Show weather and clock** | Enables/disables the complete bottom footer |
-| **Show current weather** | Shows current condition, temperature, and humidity |
+| **Footer settings** | Enables/disables elements to show in the footer |
 | **Temperature in Fahrenheit** | Uses °F instead of °C |
 | **Altitude offset** | Signed offset added to every aircraft altitude; enter it in the same unit as Display distances |
 | **Use 24-hour clock** | Uses 24-hour instead of compact 12-hour time |
 | **Radar text size (%)** | Scales radar labels and footer text from 80–130%; default is 110% |
 | **OTA password** | Password for firmware uploads; username is `admin` |
+| **Battery min/max thresholds** | Min and Max battery levels |
+| **Portal beaviour** | Select between always on portal or only on boot for 30s |
+| **Timezone** | When weather is disabled, this timezone setting is used to adjust time |
 
 Portal tools:
 
 - **Use location elevation** button to auto-fill altitude offset from current latitude/longitude
-- **Diagnostics** link (`/diag`) for uptime, heap, Wi-Fi state, and weather fetch health
+- **Diagnostics** link (`/diag`) for uptime, heap, Wi-Fi state, battery level, and weather fetch health
 
 After a reset, the device reboots and shows the setup screen immediately (no “Connecting” loop on stale credentials).
 
@@ -133,8 +144,10 @@ Edit **`include/config.h`** for hardware and behavior:
 |------|----------------|
 | Portal | `kPortalApName`, `kPortalIp`, `kPortalHostname` / `kPortalHostUrl` (mDNS; needs `-DWM_MDNS` in `platformio.ini`) |
 | Wi‑Fi timing | connect attempts, reconnect grace, portal timeout (`0` = no timeout) |
+| Battery | `kBatteryPin` battery level pin |
 | BOOT | `kBootPin`, `kBootResetHoldMs`, `kBootTapMinMs` |
 | Display SPI | pins, `kDisplayInvert`, `kDisplayRgbOrder`, `kDisplaySpiWriteHz` |
+| Display settings | Size and color depth |
 | Default location | `kDefaultRadarLat`, `kDefaultRadarLon` (until portal overrides) |
 | ADS-B | `kAdsbFetchIntervalMs`, `kAdsbShowGroundAircraft` |
 | Flight enrichment | lookup interval, timeout, and cache durations |
@@ -180,18 +193,20 @@ src/
   services/
 ```
 
-## Wiring (GC9A01 ↔ ESP32-C3 Super Mini)
+## Wiring
 
-| Display | ESP32-C3 |
-|---------|----------|
-| VCC | 3V3 |
-| GND | GND |
-| RST | GPIO **0** |
-| CS | GPIO **1** |
-| DC | GPIO **10** |
-| SDA (MOSI) | GPIO **3** |
-| SCL (SCLK) | GPIO **4** |
-| BOOT (user) | GPIO **9** |
+| ESP32-S3 |          |
+|----------|----------|
+| 5V | Output of TP4056 battery charger after switch |
+| 3V3 | Display VCC |
+| GND | Display and TP4056 GND |
+| GPIO **0** | On-board boot button |
+| GPIO **1** | Display SCL (SCLK) |
+| GPIO **2** | Display SDA (MOSI) |
+| GPIO **4** | Display RST |
+| GPIO **5** | Display DC |
+| GPIO **6** | Display CS |
+| GPIO **10** | Mid point of 2 x 100k resistors diviter bridge between 5V and GND (battery level divided by 2) |
 
 ## Build
 
@@ -206,7 +221,7 @@ pio device monitor
 
 ### Web-flashable release image
 
-Single `.bin` for [esptool-js](https://espressif.github.io/esptool-js/) and similar tools (ESP32-C3, 4 MB, flash at **0x0**):
+Single `.bin` for [esptool-js](https://espressif.github.io/esptool-js/) and similar tools (ESP32-S3, 4 MB, flash at **0x0**):
 
 ```bash
 chmod +x scripts/merge-firmware.sh   # once
