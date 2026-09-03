@@ -1525,7 +1525,7 @@ void drawFooter() {
                        radar::kColorFooterBackground);
   s_draw->drawFastHLine(foot_line_x0, kFooterTopY, 2 * (xc - foot_line_x0), radar::kColorGrid);
 
-  int y = radar::kFooterBottomY - labelHeight;
+  int y = radar::kFooterBottomY - labelHeight + 1;
   int max_char = 128;
 
   if (services::settings::footerTimeEnabled()) {
@@ -1550,8 +1550,8 @@ void drawFooter() {
     drawFooterLine(s_cached_wifi_line, y, max_char, 0xCE79);
     int wifi_x = (config::kDisplayWidth / 2) + 50;
     int battery_x = (config::kDisplayWidth / 2) - 50 - labelHeight;
-    drawWifiSymbol(wifi_x, y, labelHeight);
-    drawBatterySymbol(battery_x, y, labelHeight);
+    drawWifiSymbol(wifi_x, y - 1, labelHeight);
+    drawBatterySymbol(battery_x, y - 1, labelHeight);
     y = y - labelHeight;
     max_char = 176;
   }
